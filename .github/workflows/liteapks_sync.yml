@@ -1,0 +1,44 @@
+name: LiteAPKs to Telegram Auto-Poster
+
+on:
+  schedule:
+    # Runs every 30 minutes automatically 24/7 (100% Free)
+    - cron: '*/30 * * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub UI anytime
+
+permissions:
+  contents: write
+
+jobs:
+  scrape-and-post:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run LiteAPKs Agent
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
+          DEVUPLOADS_API_KEY: ${{ secrets.DEVUPLOADS_API_KEY }}
+        run: |
+          python agent.py
+
+      - name: Commit & Push Updated History
+        run: |
+          git config --global user.name "LiteAPKs-Agent-Bot"
+          git config --global user.email "bot@liteapks-agent.local"
+          git add sent_apks.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: update sent APKs database [skip ci]" && git push)
