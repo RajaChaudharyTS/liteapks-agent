@@ -22,3 +22,5 @@ DEVUPLOADS_API_KEY = os.getenv("DEVUPLOADS_API_KEY")
 SOURCE_BASE_URL = "https://liteapks.com"
 MAX_APKS_PER_RUN = 3
 DATABASE_FILE = os.path.join(os.path.dirname(__file__), "sent_apks.json")
+MAX_BOT_API_SIZE_MB = int(os.getenv("MAX_BOT_API_SIZE_MB", "48"))
+LOCAL_BOT_API_URL = os.getenv("LOCAL_BOT_API_URL", "")

@@ -14,10 +14,14 @@ from config import (
     DEVUPLOADS_API_KEY,
     SOURCE_BASE_URL,
     MAX_APKS_PER_RUN,
-    DATABASE_FILE,
-    MAX_BOT_API_SIZE_MB,
-    LOCAL_BOT_API_URL
+    DATABASE_FILE
 )
+
+try:
+    from config import MAX_BOT_API_SIZE_MB, LOCAL_BOT_API_URL
+except ImportError:
+    MAX_BOT_API_SIZE_MB = 48
+    LOCAL_BOT_API_URL = ""
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
