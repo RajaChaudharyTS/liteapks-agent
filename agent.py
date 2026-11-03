@@ -1,0 +1,516 @@
+import os
+import re
+import json
+import time
+import base64
+import urllib.parse
+import tempfile
+import subprocess
+import requests
+from config import (
+    BOT_TOKEN,
+    CHANNEL_ID,
+    ADMIN_CHAT_ID,
+    DEVUPLOADS_API_KEY,
+    SOURCE_BASE_URL,
+    MAX_APKS_PER_RUN,
+    DATABASE_FILE,
+    MAX_BOT_API_SIZE_MB,
+    LOCAL_BOT_API_URL
+)
+
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9'
+}
+
+def load_sent_history():
+    if os.path.exists(DATABASE_FILE):
+        try:
+            with open(DATABASE_FILE, 'r', encoding='utf-8') as f:
+                return set(json.load(f))
+        except Exception as e:
+            print(f"[Database Error]: {e}")
+    return set()
+
+def save_sent_history(sent_set):
+    try:
+        with open(DATABASE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(list(sent_set), f, indent=2)
+    except Exception as e:
+        print(f"[Database Save Error]: {e}")
+
+def get_telegram_api_base():
+    if LOCAL_BOT_API_URL:
+        return f"{LOCAL_BOT_API_URL.rstrip('/')}/bot{BOT_TOKEN}"
+    return f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+def clean_text_for_telegram(text):
+    if not text:
+        return ""
+    # Strip HTML tags except standard b, i, code
+    text = re.sub(r'</?(?:div|p|span|a|ul|li|h\d)[^>]*>', ' ', text)
+    # Strip any URLs to enforce 100% NO external links policy
+    text = re.sub(r'https?://[^\s<>"\']+', '', text)
+    # Strip website names/mentions
+    text = re.sub(r'(?i)liteapks(?:\.com)?', '', text)
+    # Enforce STRICT ENGLISH ONLY: Strip Hindi / Devanagari characters
+    text = re.sub(r'[\u0900-\u097F]+', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def scrape_latest_apk_links():
+    urls = []
+    sources = [
+        f"{SOURCE_BASE_URL}/",
+        f"{SOURCE_BASE_URL}/apps",
+        f"{SOURCE_BASE_URL}/games"
+    ]
+    for src in sources:
+        try:
+            resp = requests.get(src, headers=HEADERS, timeout=15)
+            if resp.status_code == 200:
+                found = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', resp.text)
+                for u in found:
+                    if not u.endswith('/app.html') and u not in urls:
+                        urls.append(u)
+        except Exception as e:
+            print(f"[Scraper Error] Failed to fetch {src}: {e}")
+    return urls
+
+def extract_app_metadata(app_url):
+    try:
+        resp = requests.get(app_url, headers=HEADERS, timeout=15)
+        if resp.status_code != 200:
+            return None
+        html = resp.text
+
+        # 1. App Title
+        title_m = re.search(r'<h1[^>]*>(.*?)</h1>', html, re.DOTALL)
+        raw_title = re.sub(r'<[^>]+>', '', title_m.group(1)).strip() if title_m else 'New App'
+        app_title = re.sub(r'(?i)MOD\s*APK.*', '', raw_title).strip()
+        if not app_title:
+            app_title = raw_title
+
+        # 2. App Logo Image (User Requirement: Square App Logo)
+        logo_m = re.search(r'<div class=[\"\']app-info-icon[\"\'][^>]*>[\s\S]*?<img[^>]+src=[\"\']([^\"\']+)[\"\']', html)
+        if logo_m:
+            icon_raw = logo_m.group(1)
+            # Remove thumbnail dimension suffix (e.g. -150x150) to get original full-res logo
+            image_url = re.sub(r'-\d+x\d+(\.[a-zA-Z]+)$', r'\1', icon_raw)
+        else:
+            img_m = re.search(r'<meta property=[\"\']og:image[\"\'] content=[\"\']([^\"\']+)[\"\']', html)
+            image_url = img_m.group(1) if img_m else None
+
+        # 3. Short Description
+        desc_m = re.search(r'<meta property=[\"\']og:description[\"\'] content=[\"\']([^\"\']+)[\"\']', html)
+        raw_desc = desc_m.group(1) if desc_m else ""
+        short_desc = clean_text_for_telegram(raw_desc)
+
+        # 4. Info Bar Details (Version, Size, Category)
+        labels = re.findall(r'<div class="info-bar-label">\s*([^<]+)\s*</div>[\s\S]*?<div class="info-bar-value[^"]*">\s*([^<]+)\s*</div>', html)
+        info = {l.strip().upper(): v.strip() for l, v in labels}
+        version = info.get('VERSION', 'Latest')
+        category = info.get('GENRE', 'App / Game')
+
+        # 5. Download Page Target
+        dl_m = re.findall(r'href=[\"\'](https://liteapks\.com/download/[^\"\']+)[\"\']', html)
+        if not dl_m:
+            return None
+        download_page = dl_m[0]
+
+        # 6. Extract Specific MOD & Key Features
+        features = []
+        mod_tag_m = re.search(r'[\(\[](.*?)[\)\]]', raw_title)
+        if mod_tag_m:
+            for t in re.split(r'[,/|•+]', mod_tag_m.group(1)):
+                clean_t = t.strip()
+                if len(clean_t) > 1 and clean_t.lower() not in ['apk', 'mod']:
+                    features.append(clean_t)
+
+        headings = re.findall(r'<h[23][^>]*>(.*?)</h[23]>', html)
+        ignore_words = ['liteapks', 'data safety', 'mod info', 'how to', 'faq', 'download', 'conclusion', 'overview', 'screenshots']
+        for h in headings:
+            clean_h = re.sub(r'<[^>]+>', '', h).strip()
+            if clean_h and 4 <= len(clean_h) <= 50 and not any(w in clean_h.lower() for w in ignore_words):
+                if clean_h.isupper():
+                    clean_h = clean_h.title()
+                if clean_h not in features:
+                    features.append(clean_h)
+            if len(features) >= 5:
+                break
+
+        if not features:
+            features = ["VIP Premium Unlocked", "Ad-Free Experience", "All Features Active"]
+
+        return {
+            'app_url': app_url,
+            'title': app_title,
+            'image_url': image_url,
+            'description': short_desc,
+            'version': version,
+            'category': category,
+            'features': features[:5],
+            'download_page': download_page
+        }
+    except Exception as e:
+        print(f"[Metadata Extraction Error] {app_url}: {e}")
+        return None
+
+def resolve_direct_apk_url(download_page_url):
+    try:
+        resp = requests.get(download_page_url, headers=HEADERS, timeout=15)
+        if resp.status_code != 200:
+            return None
+        html = resp.text
+
+        # Check sub-links (e.g. /1, /2 for versions)
+        sub_m = re.findall(r'href=[\"\'](https://liteapks\.com/download/[^\"\']+/\d+)[\"\']', html)
+        target_page = sub_m[0] if sub_m else download_page_url
+
+        if target_page != download_page_url:
+            resp_sub = requests.get(target_page, headers=HEADERS, timeout=15)
+            if resp_sub.status_code == 200:
+                html = resp_sub.text
+
+        div_m = re.search(r'id=[\"\']download[\"\'][^>]*data-link=[\"\']([^\"\']+)[\"\']', html)
+        if not div_m:
+            return None
+
+        raw_b64 = div_m.group(1)
+        decoded_url = base64.b64decode(raw_b64).decode('utf-8')
+
+        # Generate Dual-Base64 Timestamp Token
+        ttl = int(time.time()) + 3600 * 3
+        token = base64.b64encode(base64.b64encode(str(ttl).encode())).decode()
+
+        # Quote-escape URL path for spaces and special characters
+        parsed = urllib.parse.urlparse(decoded_url)
+        quoted_path = urllib.parse.quote(parsed.path)
+        final_dl_url = f"{parsed.scheme}://{parsed.netloc}{quoted_path}?token={token}"
+
+        # Fetch Content-Length
+        cl_resp = requests.head(final_dl_url, headers={'User-Agent': HEADERS['User-Agent'], 'Referer': target_page}, timeout=10)
+        content_length = int(cl_resp.headers.get('Content-Length', 0))
+        size_mb = content_length / (1024 * 1024)
+
+        return {
+            'download_url': final_dl_url,
+            'referer': target_page,
+            'size_bytes': content_length,
+            'size_mb': round(size_mb, 2)
+        }
+    except Exception as e:
+        print(f"[Direct URL Resolution Error] {download_page_url}: {e}")
+        return None
+
+def upload_to_devuploads(apk_path, file_name):
+    if not DEVUPLOADS_API_KEY:
+        return None
+    try:
+        print(f"Uploading {file_name} to DevUploads...")
+        srv_resp = requests.get(f"https://devuploads.com/api/upload/server?key={DEVUPLOADS_API_KEY}", timeout=15)
+        if srv_resp.status_code != 200:
+            return None
+        srv_data = srv_resp.json()
+        upload_url = srv_data.get('result')
+        sess_id = srv_data.get('sess_id')
+        if not upload_url or not sess_id:
+            return None
+
+        # Method 1: Try curl streaming
+        try:
+            cmd = [
+                'curl.exe' if os.name == 'nt' else 'curl',
+                '-s', '-X', 'POST', upload_url,
+                '-F', f'sess_id={sess_id}',
+                '-F', 'utype=reg',
+                '-F', f'file_0=@{apk_path};filename={file_name}'
+            ]
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=360)
+            if p.returncode == 0 and p.stdout:
+                res = json.loads(p.stdout)
+                if res and isinstance(res, list) and res[0].get('file_code'):
+                    code = res[0]['file_code']
+                    print(f"✅ DevUploads Upload Success! Code: {code}")
+                    return f"https://devuploads.com/{code}"
+        except Exception as ce:
+            print(f"[DevUploads Curl Warning]: {ce}")
+
+        # Method 2: Fallback to requests
+        with open(apk_path, 'rb') as f_up:
+            r_up = requests.post(
+                upload_url,
+                data={'sess_id': sess_id, 'utype': 'reg'},
+                files={'file_0': (file_name, f_up, 'application/vnd.android.package-archive')},
+                timeout=360
+            )
+            res = r_up.json()
+            if res and isinstance(res, list) and res[0].get('file_code'):
+                code = res[0]['file_code']
+                print(f"✅ DevUploads Upload Success! Code: {code}")
+                return f"https://devuploads.com/{code}"
+    except Exception as e:
+        print(f"[DevUploads Upload Error]: {e}")
+    return None
+
+def cleanup_storage(specific_files=None):
+    """Purges temporary APKs, images, and cache to guarantee zero storage bloat."""
+    import gc
+    if specific_files:
+        for f in specific_files:
+            try:
+                if f and os.path.exists(f):
+                    os.remove(f)
+                    print(f"[Storage Cleaned] Removed: {os.path.basename(f)}", flush=True)
+            except Exception as e:
+                pass
+
+    # Auto-purge leftover APKs or temp files in workspace and temp dirs
+    for check_dir in ['scratch', 'temp', 'tmp', '.']:
+        if os.path.exists(check_dir):
+            try:
+                for fname in os.listdir(check_dir):
+                    if fname.endswith(('.apk', '.apk.part', '.tmp', '.bin')) or fname.startswith('temp_'):
+                        full_p = os.path.join(check_dir, fname)
+                        if os.path.isfile(full_p):
+                            try:
+                                os.remove(full_p)
+                                print(f"[Storage Cleaned] Auto-purged: {fname}", flush=True)
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+    gc.collect()
+
+def generate_hashtags(meta):
+    title = meta.get('title', '')
+    cat = meta.get('category', '').lower()
+
+    # Clean title hashtag (e.g. CapCut, Spotify, TikTok)
+    clean_title = re.sub(r'[^a-zA-Z0-9]', '', title)
+    clean_title = re.sub(r'[vV]\d+.*', '', clean_title)
+
+    tags = []
+    if clean_title:
+        tags.append(f"#{clean_title}")
+
+    # Dynamic app-specific category tags
+    if any(w in cat for w in ['video', 'player', 'editor']):
+        tags.extend(["#VideoEditor", "#VideoEditing", "#ReelsEditor"])
+    elif any(w in cat for w in ['music', 'audio', 'song', 'sound']):
+        tags.extend(["#MusicPlayer", "#AudioStreaming", "#MusicApp"])
+    elif any(w in cat for w in ['photo', 'camera', 'image', 'picture']):
+        tags.extend(["#PhotoEditor", "#Photography", "#CameraMod"])
+    elif any(w in cat for w in ['game', 'action', 'rpg', 'arcade', 'racing']):
+        tags.extend(["#AndroidGaming", "#ModGame", "#UnlimitedMoney"])
+    elif any(w in cat for w in ['social', 'chat', 'media', 'network']):
+        tags.extend(["#SocialApp", "#AndroidSocial"])
+    elif any(w in cat for w in ['tool', 'utility', 'productivity']):
+        tags.extend(["#AndroidTools", "#ProductivityApp"])
+    else:
+        cat_tag = re.sub(r'[^a-zA-Z0-9]', '', meta.get('category', ''))
+        if cat_tag and cat_tag.lower() not in ['app', 'game']:
+            tags.append(f"#{cat_tag}")
+
+    # Core discovery tags
+    tags.extend(["#ModAPK", "#Android", "#PremiumUnlocked", "#GetModPC"])
+
+    # Remove duplicates preserving order
+    seen = set()
+    unique_tags = []
+    for t in tags:
+        if t.lower() not in seen:
+            seen.add(t.lower())
+            unique_tags.append(t)
+
+    return " ".join(unique_tags)
+
+def post_apk_to_telegram(meta, apk_info, target_chat=None):
+    chat = target_chat or CHANNEL_ID
+    api_base = get_telegram_api_base()
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # 1. Download Photo
+        img_path = os.path.join(tmp_dir, "cover.jpg")
+        if meta.get('image_url'):
+            try:
+                r_img = requests.get(meta['image_url'], headers=HEADERS, timeout=15)
+                if r_img.status_code == 200:
+                    with open(img_path, 'wb') as f:
+                        f.write(r_img.content)
+            except Exception as e:
+                print(f"[Image Download Warning]: {e}")
+
+        # 2. Download APK File
+        clean_file_name = re.sub(r'[^a-zA-Z0-9\._\-]', '_', f"{meta['title']}_{meta['version']}.apk")
+        apk_path = os.path.join(tmp_dir, clean_file_name)
+
+        print(f"Downloading APK: {clean_file_name} ({apk_info['size_mb']} MB)...")
+        r_apk = requests.get(apk_info['download_url'], headers={'User-Agent': HEADERS['User-Agent'], 'Referer': apk_info['referer']}, stream=True, timeout=180)
+        if r_apk.status_code != 200:
+            print(f"[APK Download Failed]: HTTP {r_apk.status_code}")
+            return False
+
+        with open(apk_path, 'wb') as f:
+            for chunk in r_apk.iter_content(chunk_size=1024 * 512):
+                if chunk:
+                    f.write(chunk)
+
+        print(f"Download complete! Preparing to publish...")
+
+        # 3. DevUploads Mode (If DevUploads API key is configured)
+        devuploads_url = upload_to_devuploads(apk_path, clean_file_name)
+        
+        # Free disk storage immediately after upload
+        cleanup_storage([apk_path])
+        hashtags = generate_hashtags(meta)
+
+        features_list = meta.get('features', ["VIP Premium Unlocked", "Ad-Free", "All Features Active"])
+        features_text = "\n".join([f"• {f}" for f in features_list])
+
+        if devuploads_url:
+            caption = (
+                f"📱 <b>{meta['title']}</b>\n\n"
+                f"🏷️ <b>Version:</b> {meta['version']}\n"
+                f"💾 <b>Size:</b> {apk_info['size_mb']} MB\n"
+                f"📂 <b>Category:</b> {meta['category']}\n\n"
+                f"⚡ <b>MOD & Key Features:</b>\n"
+                f"{features_text}\n\n"
+                f"📖 <b>Description:</b>\n"
+                f"{meta['description'] or 'Enjoy the latest version with full unlocked features on your Android device.'}\n\n"
+                f"📥 <b>Download APK (High Speed):</b>\n"
+                f"👉 {devuploads_url}\n\n"
+                f"{hashtags}"
+            )
+
+            # Send Photo with Caption (No buttons attached as requested)
+            if os.path.exists(img_path):
+                try:
+                    with open(img_path, 'rb') as f_img:
+                        r_photo = requests.post(
+                            f"{api_base}/sendPhoto",
+                            data={'chat_id': chat, 'caption': caption, 'parse_mode': 'HTML'},
+                            files={'photo': f_img},
+                            timeout=30
+                        )
+                        if r_photo.json().get('ok'):
+                            print(f"✅ Successfully posted {meta['title']} (DevUploads link) to Telegram ({chat})!")
+                            return True
+                        else:
+                            print(f"❌ Telegram sendPhoto Error: {r_photo.json()}")
+                except Exception as e:
+                    print(f"[Send Photo Error]: {e}")
+            else:
+                try:
+                    r_msg = requests.post(
+                        f"{api_base}/sendMessage",
+                        data={'chat_id': chat, 'text': caption, 'parse_mode': 'HTML'},
+                        timeout=30
+                    )
+                    if r_msg.json().get('ok'):
+                        print(f"✅ Successfully posted {meta['title']} text to Telegram ({chat})!")
+                        return True
+                except Exception as e:
+                    print(f"[Send Message Error]: {e}")
+
+            return False
+
+        # Fallback: Direct Telegram Document Upload (if DevUploads is not configured)
+        caption = (
+            f"📱 <b>{meta['title']}</b>\n\n"
+            f"🏷️ <b>Version:</b> {meta['version']}\n"
+            f"💾 <b>Size:</b> {apk_info['size_mb']} MB\n"
+            f"📂 <b>Category:</b> {meta['category']}\n"
+            f"⚡ <b>MOD & Key Features:</b>\n"
+            f"{features_text}\n\n"
+            f"📖 <b>Description:</b>\n"
+            f"{meta['description'] or 'Enjoy the latest version with full unlocked features on your Android device.'}\n\n"
+            f"{hashtags}"
+        )
+
+        if os.path.exists(img_path):
+            try:
+                with open(img_path, 'rb') as f_img:
+                    requests.post(
+                        f"{api_base}/sendPhoto",
+                        data={'chat_id': chat, 'caption': caption, 'parse_mode': 'HTML'},
+                        files={'photo': f_img},
+                        timeout=30
+                    )
+            except Exception as e:
+                print(f"[Send Photo Error]: {e}")
+
+        doc_caption = f"📦 <b>{meta['title']}</b> ({meta['version']})\n<i>Direct APK File • {apk_info['size_mb']} MB</i>"
+        try:
+            cmd = [
+                'curl.exe' if os.name == 'nt' else 'curl',
+                '-s', '-X', 'POST', f"{api_base}/sendDocument",
+                '-F', f"chat_id={chat}",
+                '-F', f"caption={doc_caption}",
+                '-F', "parse_mode=HTML",
+                '-F', f"document=@{apk_path};filename={clean_file_name}"
+            ]
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=360)
+            if p.returncode == 0 and p.stdout:
+                res = json.loads(p.stdout)
+                if res.get('ok'):
+                    print(f"✅ Successfully posted {meta['title']} to Telegram (via curl streaming)!")
+                    return True
+        except Exception as e:
+            print(f"[Curl Upload Info]: {e}")
+
+        return False
+
+def run_pipeline(demo_target=None):
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting LiteAPKs Autonomous Pipeline...")
+    cleanup_storage()
+    sent_set = load_sent_history()
+    print(f"Database contains {len(sent_set)} previously broadcasted APKs.")
+
+    app_urls = scrape_latest_apk_links()
+    print(f"Discovered {len(app_urls)} app links on LiteAPKs.")
+
+    processed_count = 0
+
+    for url in app_urls:
+        if processed_count >= MAX_APKS_PER_RUN:
+            break
+
+        if url in sent_set:
+            continue
+
+        print(f"\nProcessing: {url}")
+        meta = extract_app_metadata(url)
+        if not meta:
+            continue
+
+        apk_info = resolve_direct_apk_url(meta['download_page'])
+        if not apk_info:
+            print(f"Could not resolve direct APK URL for {meta['title']}. Skipping.")
+            continue
+
+        print(f"Found APK: {meta['title']} | Size: {apk_info['size_mb']} MB")
+
+        # File size check (only applies if DevUploads is NOT used and no local bot API)
+        if not DEVUPLOADS_API_KEY and apk_info['size_mb'] > MAX_BOT_API_SIZE_MB and not LOCAL_BOT_API_URL:
+            print(f"⚠️ Skipping {meta['title']}: File size ({apk_info['size_mb']} MB) exceeds standard Bot API limit (50 MB).")
+            sent_set.add(url)
+            continue
+
+        success = post_apk_to_telegram(meta, apk_info, target_chat=demo_target)
+        if success:
+            sent_set.add(url)
+            sent_set.add(f"{url}::{meta['version']}")
+            processed_count += 1
+            save_sent_history(sent_set)
+            # 5-second interval between posts
+            time.sleep(5)
+
+    cleanup_storage()
+    print(f"\nPipeline Run Completed. Broadcasted {processed_count} new APKs.")
+
+if __name__ == "__main__":
+    run_pipeline()
