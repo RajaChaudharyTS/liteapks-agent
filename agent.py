@@ -44,7 +44,10 @@ BANNED_APP_PATTERNS = [
     r'(?i)liteapks?\s*app\b',
     r'(?i)^liteapks?$',
     r'(?i)/app\.html$',
-    r'(?i)/liteapks[-_]store\.html'
+    r'(?i)/liteapks[-_]store\.html',
+    r'(?i)/liteapks[-_]market\.html',
+    r'(?i)/liteapks[-_]app\.html',
+    r'(?i)\bliteapks\s*store\b'
 ]
 
 def is_banned_app(title="", url=""):
@@ -235,15 +238,38 @@ def scrape_latest_apk_links():
     tier3_remaining_apps_and_games = []
 
     # 1. Tier 1: Main "Top Apps" and "Top Games" from /apps, /games and Homepage
-    for root_url in [f"{SOURCE_BASE_URL}/apps", f"{SOURCE_BASE_URL}/games", f"{SOURCE_BASE_URL}/"]:
+    # Completely DYNAMIC & Auto-Scaling (Zero Hardcoded Limits):
+    # Automatically extracts ALL apps in top carousels (scroll-section, #featured-track, top-app-item)
+    # adapting seamlessly if LiteAPKs has 10, 15, 20, or 50 apps now or in the future!
+    for root_url in [f"{SOURCE_BASE_URL}/", f"{SOURCE_BASE_URL}/apps", f"{SOURCE_BASE_URL}/games"]:
         try:
             r = requests.get(root_url, headers=HEADERS, timeout=10)
             if r.status_code == 200:
-                found = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', r.text)
-                for u in found[:15]:
-                    if not is_banned_app("", u) and u not in tier1_top_apps:
-                        tier1_top_apps.append(u)
-                for u in found[15:]:
+                html = r.text
+                page_top_apps = []
+
+                # Strategy A: All top-app-item elements (dynamic, scales to any future count)
+                top_items = re.findall(r'<a[^>]+class=[\"\'][^\"\']*top-app-item[^\"\']*[\"\'][^>]+href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', html)
+                if not top_items:
+                    top_items = re.findall(r'<a[^>]+href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\'][^>]+class=[\"\'][^\"\']*top-app-item[^\"\']*[\"\']', html)
+                for u in top_items:
+                    if not is_banned_app("", u) and u not in page_top_apps and u not in tier1_top_apps:
+                        page_top_apps.append(u)
+
+                # Strategy B: All scroll-section carousels (e.g. "Indispensable on your phone", "Top Apps", "Top Games", #featured-track)
+                scroll_matches = re.findall(r'<div[^>]*class=[\"\'][^\"\']*(?:scroll-section|overflow-x-auto)[^\"\']*[\"\'][^>]*>([\s\S]*?)</div>\s*</div>', html)
+                featured_m = re.findall(r'<div[^>]*id=[\"\']featured-track[\"\'][^>]*>([\s\S]*?)</div>\s*</div>', html)
+                for sec_html in scroll_matches + featured_m:
+                    for u in re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', sec_html):
+                        if not is_banned_app("", u) and u not in page_top_apps and u not in tier1_top_apps:
+                            page_top_apps.append(u)
+
+                # Add all dynamically detected top apps to Tier 1
+                tier1_top_apps.extend(page_top_apps)
+
+                # All remaining general apps on the page go to Tier 3 (remaining pool)
+                all_page_links = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', html)
+                for u in all_page_links:
                     if not is_banned_app("", u) and u not in tier1_top_apps and u not in tier3_remaining_apps_and_games:
                         tier3_remaining_apps_and_games.append(u)
         except Exception as e:
