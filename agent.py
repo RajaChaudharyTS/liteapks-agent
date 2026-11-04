@@ -251,14 +251,28 @@ def resolve_direct_apk_url(download_page_url):
         ttl = int(time.time()) + 3600 * 3
         token = base64.b64encode(base64.b64encode(str(ttl).encode())).decode()
 
-        # Quote-escape URL path for spaces and special characters
+        # Quote-escape URL path for spaces and special characters safely (prevent double-encoding)
         parsed = urllib.parse.urlparse(decoded_url)
-        quoted_path = urllib.parse.quote(parsed.path)
-        final_dl_url = f"{parsed.scheme}://{parsed.netloc}{quoted_path}?token={token}"
+        clean_path = urllib.parse.quote(urllib.parse.unquote(parsed.path))
+        final_dl_url = f"{parsed.scheme}://{parsed.netloc}{clean_path}?token={token}"
 
-        # Fetch Content-Length
-        cl_resp = requests.head(final_dl_url, headers={'User-Agent': HEADERS['User-Agent'], 'Referer': target_page}, timeout=10)
-        content_length = int(cl_resp.headers.get('Content-Length', 0))
+        # Fetch Content-Length with Range GET fallback if HEAD returns 0
+        content_length = 0
+        try:
+            cl_resp = requests.head(final_dl_url, headers={'User-Agent': HEADERS['User-Agent'], 'Referer': target_page}, timeout=10)
+            content_length = int(cl_resp.headers.get('Content-Length', 0))
+        except Exception:
+            pass
+
+        if content_length == 0:
+            try:
+                range_resp = requests.get(final_dl_url, headers={'User-Agent': HEADERS['User-Agent'], 'Referer': target_page, 'Range': 'bytes=0-0'}, timeout=10)
+                cr = range_resp.headers.get('Content-Range', '')
+                if '/' in cr:
+                    content_length = int(cr.split('/')[-1])
+            except Exception:
+                pass
+
         size_mb = content_length / (1024 * 1024)
 
         return {
@@ -458,23 +472,44 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False):
                 caption = caption[:995] + "..."
 
             # Send Photo with Caption (No buttons attached as requested)
+            posted_success = False
             if os.path.exists(img_path):
-                try:
-                    with open(img_path, 'rb') as f_img:
-                        r_photo = requests.post(
+                for attempt in range(2):
+                    try:
+                        with open(img_path, 'rb') as f_img:
+                            r_photo = requests.post(
+                                f"{api_base}/sendPhoto",
+                                data={'chat_id': chat, 'caption': caption, 'parse_mode': 'HTML'},
+                                files={'photo': f_img},
+                                timeout=45
+                            )
+                            if r_photo.json().get('ok'):
+                                print(f"✅ Successfully posted {meta['title']} (DevUploads link) to Telegram ({chat})!")
+                                posted_success = True
+                                break
+                            else:
+                                print(f"❌ Telegram sendPhoto (file) Error: {r_photo.json()}")
+                    except Exception as e:
+                        print(f"[Send Photo File Error attempt {attempt+1}]: {e}")
+                        time.sleep(2)
+
+                # Fallback: Send directly via image URL if file upload timed out/failed
+                if not posted_success and meta.get('image_url'):
+                    try:
+                        r_url = requests.post(
                             f"{api_base}/sendPhoto",
-                            data={'chat_id': chat, 'caption': caption, 'parse_mode': 'HTML'},
-                            files={'photo': f_img},
+                            data={'chat_id': chat, 'caption': caption, 'parse_mode': 'HTML', 'photo': meta['image_url']},
                             timeout=30
                         )
-                        if r_photo.json().get('ok'):
-                            print(f"✅ Successfully posted {meta['title']} (DevUploads link) to Telegram ({chat})!")
-                            return True
+                        if r_url.json().get('ok'):
+                            print(f"✅ Successfully posted {meta['title']} (photo URL fallback) to Telegram ({chat})!")
+                            posted_success = True
                         else:
-                            print(f"❌ Telegram sendPhoto Error: {r_photo.json()}")
-                except Exception as e:
-                    print(f"[Send Photo Error]: {e}")
-            else:
+                            print(f"❌ Telegram sendPhoto (URL) Error: {r_url.json()}")
+                    except Exception as e:
+                        print(f"[Send Photo URL Error]: {e}")
+
+            if not posted_success:
                 try:
                     r_msg = requests.post(
                         f"{api_base}/sendMessage",
@@ -482,12 +517,14 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False):
                         timeout=30
                     )
                     if r_msg.json().get('ok'):
-                        print(f"✅ Successfully posted {meta['title']} text to Telegram ({chat})!")
-                        return True
+                        print(f"✅ Successfully posted {meta['title']} (text fallback) to Telegram ({chat})!")
+                        posted_success = True
+                    else:
+                        print(f"❌ Telegram sendMessage Error: {r_msg.json()}")
                 except Exception as e:
                     print(f"[Send Message Error]: {e}")
 
-            return False
+            return posted_success
 
         # Fallback: Direct Telegram Document Upload (if DevUploads is not configured)
         caption = (
