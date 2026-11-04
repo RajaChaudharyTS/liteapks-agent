@@ -2,10 +2,14 @@ name: LiteAPKs to Telegram Auto-Poster
 
 on:
   schedule:
-    # Runs strictly every 30 minutes at off-peak minutes (:15 and :45)
-    # Off-peak prevents global GitHub Actions queue congestion and delays
-    - cron: '15,45 * * * *'
-  workflow_dispatch: # Allows manual trigger from GitHub UI anytime
+    # 3x Redundant Cron Triggers:
+    # 1. Runs every 30 minutes on POSIX step interval
+    - cron: '*/30 * * * *'
+    # 2. Explicit off-peak minute 15
+    - cron: '15 * * * *'
+    # 3. Explicit off-peak minute 45
+    - cron: '45 * * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub UI or Telegram Bot anytime
 
 concurrency:
   group: liteapks-sync-run
