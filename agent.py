@@ -69,7 +69,11 @@ def scrape_latest_apk_links():
     sources = [
         f"{SOURCE_BASE_URL}/",
         f"{SOURCE_BASE_URL}/apps",
-        f"{SOURCE_BASE_URL}/games"
+        f"{SOURCE_BASE_URL}/games",
+        f"{SOURCE_BASE_URL}/apps/page/2",
+        f"{SOURCE_BASE_URL}/games/page/2",
+        f"{SOURCE_BASE_URL}/apps/page/3",
+        f"{SOURCE_BASE_URL}/games/page/3",
     ]
     for src in sources:
         try:
@@ -107,10 +111,12 @@ def extract_app_metadata(app_url):
             img_m = re.search(r'<meta property=[\"\']og:image[\"\'] content=[\"\']([^\"\']+)[\"\']', html)
             image_url = img_m.group(1) if img_m else None
 
-        # 3. Short Description
+        # 3. Short Description (Sanitized and capped to 220 chars for Telegram safety)
         desc_m = re.search(r'<meta property=[\"\']og:description[\"\'] content=[\"\']([^\"\']+)[\"\']', html)
         raw_desc = desc_m.group(1) if desc_m else ""
         short_desc = clean_text_for_telegram(raw_desc)
+        if len(short_desc) > 220:
+            short_desc = short_desc[:217] + "..."
 
         # 4. Info Bar Details (Version, Size, Category)
         labels = re.findall(r'<div class="info-bar-label">\s*([^<]+)\s*</div>[\s\S]*?<div class="info-bar-value[^"]*">\s*([^<]+)\s*</div>', html)
@@ -389,6 +395,9 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None):
                 f"👉 {devuploads_url}\n\n"
                 f"{hashtags}"
             )
+            # Safe boundary check: Telegram max caption is 1024 characters
+            if len(caption) > 1000:
+                caption = caption[:995] + "..."
 
             # Send Photo with Caption (No buttons attached as requested)
             if os.path.exists(img_path):
@@ -498,20 +507,33 @@ def run_pipeline(demo_target=None):
 
         print(f"Found APK: {meta['title']} | Size: {apk_info['size_mb']} MB")
 
+        # Safeguard: Skip massive files (> 350 MB) to keep 10-post batch execution fast
+        if apk_info['size_mb'] > 350:
+            print(f"⚠️ Skipping {meta['title']}: File size ({apk_info['size_mb']} MB) exceeds 350 MB threshold for fast batch posting.")
+            continue
+
         # File size check (only applies if DevUploads is NOT used and no local bot API)
         if not DEVUPLOADS_API_KEY and apk_info['size_mb'] > MAX_BOT_API_SIZE_MB and not LOCAL_BOT_API_URL:
             print(f"⚠️ Skipping {meta['title']}: File size ({apk_info['size_mb']} MB) exceeds standard Bot API limit (50 MB).")
             sent_set.add(url)
             continue
 
-        success = post_apk_to_telegram(meta, apk_info, target_chat=demo_target)
+        success = False
+        try:
+            success = post_apk_to_telegram(meta, apk_info, target_chat=demo_target)
+        except Exception as pe:
+            print(f"[Pipeline Post Error] {meta['title']}: {pe}")
+        finally:
+            cleanup_storage()
+
         if success:
             sent_set.add(url)
             sent_set.add(f"{url}::{meta['version']}")
             processed_count += 1
             save_sent_history(sent_set)
-            # 5-second interval between posts
-            time.sleep(5)
+            print(f"📊 Progress: [{processed_count}/{MAX_APKS_PER_RUN}] posted successfully.")
+            # 3-second safe delay between posts to prevent Telegram 429 rate limit
+            time.sleep(3)
 
     cleanup_storage()
     print(f"\nPipeline Run Completed. Broadcasted {processed_count} new APKs.")
