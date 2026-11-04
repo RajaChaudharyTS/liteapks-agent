@@ -274,7 +274,16 @@ def scrape_latest_apk_links():
                 html = r_cat.text
                 seen_apps = []
 
-                # 1. Explicitly extract Official Top Apps section (scroll-section / Top <Category>)
+                # Strategy 1 (Universal Top-App Identifier): Extract all top-app-item elements dynamically
+                # (Adapts automatically whether LiteAPKs has 10, 12, 15, or 30+ top apps in future)
+                top_items = re.findall(r'<a[^>]+class=[\"\'][^\"\']*top-app-item[^\"\']*[\"\'][^>]+href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', html)
+                if not top_items:
+                    top_items = re.findall(r'<a[^>]+href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\'][^>]+class=[\"\'][^\"\']*top-app-item[^\"\']*[\"\']', html)
+                for a in top_items:
+                    if a not in seen_apps and not is_banned_app("", a):
+                        seen_apps.append(a)
+
+                # Strategy 2 (Carousel Container Fallback): Any remaining apps in scroll-section container
                 scroll_m = re.search(r'<div[^>]*class=[\"\'][^\"\']*scroll-section[^\"\']*[\"\'][^>]*>([\s\S]*?)</div>\s*</div>', html)
                 if scroll_m:
                     sec_links = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', scroll_m.group(1))
@@ -282,7 +291,7 @@ def scrape_latest_apk_links():
                         if a not in seen_apps and not is_banned_app("", a):
                             seen_apps.append(a)
 
-                # 2. Add all remaining apps from the category page grid
+                # Strategy 3 (Dynamic Full Category Grid): Automatically captures all other apps on category page
                 cat_apps = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', html)
                 for a in cat_apps:
                     if a not in seen_apps and not is_banned_app("", a):
