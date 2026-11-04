@@ -881,7 +881,7 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False):
 
         return False
 
-def run_pipeline(demo_target=None):
+def run_pipeline(demo_target=None, status_callback=None):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting LiteAPKs Autonomous Pipeline...")
     cleanup_storage()
     sent_set = load_sent_history()
@@ -889,6 +889,11 @@ def run_pipeline(demo_target=None):
 
     app_urls = scrape_latest_apk_links()
     print(f"Discovered {len(app_urls)} app links on LiteAPKs.")
+    if status_callback:
+        try:
+            status_callback('start', {'discovered': len(app_urls), 'target_max': MAX_APKS_PER_RUN})
+        except Exception:
+            pass
 
     if len(app_urls) == 0:
         warn = "⚠️ <b>LiteAPKs Scraper Warning</b>: 0 app links discovered on LiteAPKs! Check site availability or HTML structure changes."
@@ -962,11 +967,29 @@ def run_pipeline(demo_target=None):
             save_sent_history(sent_set)
             status_tag = "Updated" if is_update else "New"
             print(f"📊 Progress: [{processed_count}/{MAX_APKS_PER_RUN}] ({status_tag}) posted successfully.")
+            if status_callback:
+                try:
+                    status_callback('progress', {
+                        'processed': processed_count,
+                        'max': MAX_APKS_PER_RUN,
+                        'title': meta['title'],
+                        'version': version,
+                        'is_update': is_update,
+                        'size_mb': apk_info['size_mb']
+                    })
+                except Exception:
+                    pass
             # 3-second safe delay between posts to prevent Telegram 429 rate limit
             time.sleep(3)
 
     cleanup_storage()
     print(f"\nPipeline Run Completed. Broadcasted {processed_count} new/updated APKs.")
+    if status_callback:
+        try:
+            status_callback('done', {'processed': processed_count, 'total_db': len(sent_set)})
+        except Exception:
+            pass
+    return processed_count
 
     # Automated GitHub Step Summary Report
     summary_file = os.getenv("GITHUB_STEP_SUMMARY")
