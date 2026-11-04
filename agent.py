@@ -29,6 +29,24 @@ HEADERS = {
     'Accept-Language': 'en-US,en;q=0.9'
 }
 
+# Permanent Blacklist Policy: Never scrape, download, or post LITEAPKS Store
+BANNED_APP_PATTERNS = [
+    r'(?i)liteapks?\s*store',
+    r'(?i)liteapks?\s*market',
+    r'(?i)liteapks?\s*app\b',
+    r'(?i)^liteapks?$',
+    r'(?i)/app\.html$',
+    r'(?i)/liteapks[-_]store\.html'
+]
+
+def is_banned_app(title="", url=""):
+    """Checks if an app is permanently blacklisted per user policy."""
+    combined = f"{title} {url}".lower()
+    for pattern in BANNED_APP_PATTERNS:
+        if re.search(pattern, combined):
+            return True
+    return False
+
 def load_sent_history():
     if os.path.exists(DATABASE_FILE):
         try:
@@ -65,27 +83,65 @@ def clean_text_for_telegram(text):
     return text
 
 def scrape_latest_apk_links():
-    urls = []
-    sources = [
-        f"{SOURCE_BASE_URL}/",
-        f"{SOURCE_BASE_URL}/apps",
-        f"{SOURCE_BASE_URL}/games",
-        f"{SOURCE_BASE_URL}/apps/page/2",
-        f"{SOURCE_BASE_URL}/games/page/2",
-        f"{SOURCE_BASE_URL}/apps/page/3",
-        f"{SOURCE_BASE_URL}/games/page/3",
-    ]
-    for src in sources:
-        try:
-            resp = requests.get(src, headers=HEADERS, timeout=15)
-            if resp.status_code == 200:
-                found = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', resp.text)
+    """Scrapes LiteAPKs with strict Priority:
+    1. Tier 1 (Highest): Homepage Top Apps ('Indispensable on your phone' / 'Must have')
+    2. Tier 2 (High): Top Apps & Top Games of each major category (/apps & /games top sections)
+    3. Tier 3 (Standard): General & Latest updates (pagination pages)
+    """
+    top_priority_urls = []
+    category_top_urls = []
+    general_urls = []
+
+    # 1. Tier 1: Homepage Top Apps ("Indispensable on your phone", "Must have collection")
+    try:
+        r_home = requests.get(f"{SOURCE_BASE_URL}/", headers=HEADERS, timeout=15)
+        if r_home.status_code == 200:
+            html = r_home.text
+            top_sec = re.search(r'(?:Indispensable|Must have)[\s\S]*?(?:Lastest Games|Lastest Apps)', html)
+            if top_sec:
+                found = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', top_sec.group(0))
                 for u in found:
-                    if not u.endswith('/app.html') and u not in urls:
-                        urls.append(u)
+                    if not is_banned_app("", u) and u not in top_priority_urls:
+                        top_priority_urls.append(u)
+            
+            all_home = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', html)
+            for u in all_home:
+                if not is_banned_app("", u) and u not in top_priority_urls and u not in general_urls:
+                    general_urls.append(u)
+    except Exception as e:
+        print(f"[Scraper Error] Homepage: {e}")
+
+    # 2. Tier 2: Category Top Apps & Top Games (/apps and /games first sections)
+    for cat_page in [f"{SOURCE_BASE_URL}/apps", f"{SOURCE_BASE_URL}/games"]:
+        try:
+            r_cat = requests.get(cat_page, headers=HEADERS, timeout=15)
+            if r_cat.status_code == 200:
+                found = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', r_cat.text)
+                for u in found[:15]:
+                    if not is_banned_app("", u) and u not in top_priority_urls and u not in category_top_urls:
+                        category_top_urls.append(u)
+                for u in found[15:]:
+                    if not is_banned_app("", u) and u not in top_priority_urls and u not in category_top_urls and u not in general_urls:
+                        general_urls.append(u)
         except Exception as e:
-            print(f"[Scraper Error] Failed to fetch {src}: {e}")
-    return urls
+            print(f"[Scraper Error] {cat_page}: {e}")
+
+    # 3. Tier 3: Pagination / Deep Catalog (Page 2 & 3)
+    for page in [f"{SOURCE_BASE_URL}/apps/page/2", f"{SOURCE_BASE_URL}/games/page/2", f"{SOURCE_BASE_URL}/apps/page/3", f"{SOURCE_BASE_URL}/games/page/3"]:
+        try:
+            r_p = requests.get(page, headers=HEADERS, timeout=15)
+            if r_p.status_code == 200:
+                found = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', r_p.text)
+                for u in found:
+                    if not is_banned_app("", u) and u not in top_priority_urls and u not in category_top_urls and u not in general_urls:
+                        general_urls.append(u)
+        except Exception as e:
+            print(f"[Scraper Error] {page}: {e}")
+
+    # Merge in strict Priority Order
+    final_prioritized = top_priority_urls + category_top_urls + general_urls
+    print(f"📊 Scraper Priority Queue: {len(top_priority_urls)} Top Apps, {len(category_top_urls)} Category Top Apps, {len(general_urls)} General Apps.")
+    return final_prioritized
 
 def extract_app_metadata(app_url):
     try:
@@ -338,7 +394,7 @@ def generate_hashtags(meta):
 
     return " ".join(unique_tags)
 
-def post_apk_to_telegram(meta, apk_info, target_chat=None):
+def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False):
     chat = target_chat or CHANNEL_ID
     api_base = get_telegram_api_base()
 
@@ -380,9 +436,11 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None):
 
         features_list = meta.get('features', ["VIP Premium Unlocked", "Ad-Free", "All Features Active"])
         features_text = "\n".join([f"• {f}" for f in features_list])
+        update_badge = "🔄 <b>NEW UPDATE RELEASED!</b>\n\n" if is_update else ""
 
         if devuploads_url:
             caption = (
+                f"{update_badge}"
                 f"📱 <b>{meta['title']}</b>\n\n"
                 f"🏷️ <b>Version:</b> {meta['version']}\n"
                 f"💾 <b>Size:</b> {apk_info['size_mb']} MB\n"
@@ -492,20 +550,41 @@ def run_pipeline(demo_target=None):
         if processed_count >= MAX_APKS_PER_RUN:
             break
 
-        if url in sent_set:
+        # Fast pre-check: permanent ban on any LiteAPKs Store URL
+        if is_banned_app("", url):
             continue
 
-        print(f"\nProcessing: {url}")
         meta = extract_app_metadata(url)
         if not meta:
             continue
+
+        # Permanent ban check on app title / metadata
+        if is_banned_app(meta.get('title', ''), url):
+            print(f"🚫 [PERMANENTLY BANNED]: Skipping {meta['title']} ({url}) per user policy.")
+            sent_set.add(url)
+            sent_set.add(f"{url}::{meta.get('version', '')}")
+            continue
+
+        version = meta.get('version', 'Latest')
+        version_key = f"{url}::{version}"
+
+        # If this EXACT version has already been broadcasted, skip!
+        if version_key in sent_set:
+            continue
+
+        # Check if this app was posted previously at an older version (Update release!)
+        is_update = (url in sent_set)
+        if is_update:
+            print(f"🔄 [APP UPDATE DETECTED]: {meta['title']} has been updated to new version {version}!")
+        else:
+            print(f"\nProcessing New App: {meta['title']} ({url})")
 
         apk_info = resolve_direct_apk_url(meta['download_page'])
         if not apk_info:
             print(f"Could not resolve direct APK URL for {meta['title']}. Skipping.")
             continue
 
-        print(f"Found APK: {meta['title']} | Size: {apk_info['size_mb']} MB")
+        print(f"Found APK: {meta['title']} (v{version}) | Size: {apk_info['size_mb']} MB")
 
         # Safeguard: Skip massive files (> 350 MB) to keep 10-post batch execution fast
         if apk_info['size_mb'] > 350:
@@ -516,11 +595,12 @@ def run_pipeline(demo_target=None):
         if not DEVUPLOADS_API_KEY and apk_info['size_mb'] > MAX_BOT_API_SIZE_MB and not LOCAL_BOT_API_URL:
             print(f"⚠️ Skipping {meta['title']}: File size ({apk_info['size_mb']} MB) exceeds standard Bot API limit (50 MB).")
             sent_set.add(url)
+            sent_set.add(version_key)
             continue
 
         success = False
         try:
-            success = post_apk_to_telegram(meta, apk_info, target_chat=demo_target)
+            success = post_apk_to_telegram(meta, apk_info, target_chat=demo_target, is_update=is_update)
         except Exception as pe:
             print(f"[Pipeline Post Error] {meta['title']}: {pe}")
         finally:
@@ -528,15 +608,16 @@ def run_pipeline(demo_target=None):
 
         if success:
             sent_set.add(url)
-            sent_set.add(f"{url}::{meta['version']}")
+            sent_set.add(version_key)
             processed_count += 1
             save_sent_history(sent_set)
-            print(f"📊 Progress: [{processed_count}/{MAX_APKS_PER_RUN}] posted successfully.")
+            status_tag = "Updated" if is_update else "New"
+            print(f"📊 Progress: [{processed_count}/{MAX_APKS_PER_RUN}] ({status_tag}) posted successfully.")
             # 3-second safe delay between posts to prevent Telegram 429 rate limit
             time.sleep(3)
 
     cleanup_storage()
-    print(f"\nPipeline Run Completed. Broadcasted {processed_count} new APKs.")
+    print(f"\nPipeline Run Completed. Broadcasted {processed_count} new/updated APKs.")
 
 if __name__ == "__main__":
     run_pipeline()
