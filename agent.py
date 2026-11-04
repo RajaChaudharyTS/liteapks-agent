@@ -1,28 +1,8 @@
-def send_admin_alert(message):
-    """Sends immediate SOS notifications to Admin Telegram chat if any error occurs."""
-    if not BOT_TOKEN or not ADMIN_CHAT_ID:
-        return
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = {
-            'chat_id': ADMIN_CHAT_ID,
-            'text': f"🚨 <b>LiteAPKs Agent SOS Alert</b>\n\n{message}",
-            'parse_mode': 'HTML'
-        }
-        requests.post(url, data=payload, timeout=10)
-    except Exception as ae:
-        print(f"[Admin Alert Exception]: {ae}")
-
 import os
 import sys
 import re
 import json
-
-if hasattr(sys.stdout, 'reconfigure'):
-    try:
-        sys.stdout.reconfigure(encoding='utf-8')
-    except Exception:
-        pass
+import html
 import time
 import base64
 import urllib.parse
@@ -30,6 +10,13 @@ import tempfile
 import subprocess
 import requests
 from concurrent.futures import ThreadPoolExecutor
+
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 from config import (
     BOT_TOKEN,
     CHANNEL_ID,
@@ -45,6 +32,24 @@ try:
 except ImportError:
     MAX_BOT_API_SIZE_MB = 48
     LOCAL_BOT_API_URL = ""
+
+def send_admin_alert(message):
+    """Sends immediate SOS notifications to Admin Telegram chat if any error occurs."""
+    if not BOT_TOKEN or not ADMIN_CHAT_ID:
+        print("[Admin Alert Info]: BOT_TOKEN or ADMIN_CHAT_ID not configured, skipping alert.")
+        return
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            'chat_id': ADMIN_CHAT_ID,
+            'text': f"🚨 <b>LiteAPKs Agent SOS Alert</b>\n\n{message}",
+            'parse_mode': 'HTML'
+        }
+        res = requests.post(url, data=payload, timeout=10)
+        if not res.ok:
+            print(f"[Admin Alert Failed]: {res.status_code} - {res.text}")
+    except Exception as ae:
+        print(f"[Admin Alert Exception]: {ae}")
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -885,6 +890,11 @@ def run_pipeline(demo_target=None):
     app_urls = scrape_latest_apk_links()
     print(f"Discovered {len(app_urls)} app links on LiteAPKs.")
 
+    if len(app_urls) == 0:
+        warn = "⚠️ <b>LiteAPKs Scraper Warning</b>: 0 app links discovered on LiteAPKs! Check site availability or HTML structure changes."
+        print(warn)
+        send_admin_alert(warn)
+
     processed_count = 0
 
     for url in app_urls:
@@ -958,5 +968,31 @@ def run_pipeline(demo_target=None):
     cleanup_storage()
     print(f"\nPipeline Run Completed. Broadcasted {processed_count} new/updated APKs.")
 
+    # Automated GitHub Step Summary Report
+    summary_file = os.getenv("GITHUB_STEP_SUMMARY")
+    if summary_file:
+        try:
+            with open(summary_file, "a", encoding="utf-8") as sf:
+                sf.write("### 🚀 LiteAPKs Agent Execution Summary\n\n")
+                sf.write(f"- **Discovered Links**: {len(app_urls)}\n")
+                sf.write(f"- **Broadcasted This Run**: {processed_count} / {MAX_APKS_PER_RUN}\n")
+                sf.write(f"- **Total Sent Database**: {len(sent_set)} entries\n")
+                sf.write(f"- **Execution Timestamp**: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}\n")
+                sf.write(f"- **Status**: {'✅ Successful Run' if processed_count > 0 else 'ℹ️ No New Updates'}\n")
+        except Exception as se:
+            print(f"[Step Summary Error]: {se}")
+
 if __name__ == "__main__":
-    run_pipeline()
+    try:
+        run_pipeline()
+    except Exception as fatal_e:
+        import traceback
+        err_tb = traceback.format_exc()
+        print(f"FATAL PIPELINE CRASH: {fatal_e}\n{err_tb}")
+        err_msg = (
+            f"🚨 <b>Fatal Crash in LiteAPKs Agent</b>\n\n"
+            f"<b>Error:</b> <code>{html.escape(str(fatal_e))}</code>\n\n"
+            f"<pre>{html.escape(err_tb[-1500:])}</pre>"
+        )
+        send_admin_alert(err_msg)
+        sys.exit(1)
