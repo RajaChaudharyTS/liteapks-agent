@@ -63,57 +63,57 @@ def get_control_keyboard():
     return {
         'inline_keyboard': [
             [
-                {'text': '🚀 तुरंत पोस्ट करो (Post Now)', 'callback_data': 'run_now'}
+                {'text': '🚀 Scrape & Post Now', 'callback_data': 'run_now'}
             ],
             [
-                {'text': '📊 डेटाबेस स्टेटस', 'callback_data': 'stats'},
-                {'text': '🔍 नए ऐप्स प्रीव्यू', 'callback_data': 'preview'}
+                {'text': '📊 Database Stats', 'callback_data': 'stats'},
+                {'text': '🔍 Preview Next Apps', 'callback_data': 'preview'}
             ],
             [
-                {'text': '⏱️ 30-Min ऑटो-शेड्यूल स्टेटस', 'callback_data': 'schedule_info'}
+                {'text': '⏱️ 30-Min Schedule Status', 'callback_data': 'schedule_info'}
             ]
         ]
     }
 
 def handle_start(chat_id, user_info):
     db_items = agent.load_sent_history()
-    status_str = "🟡 सक्रिय (पोस्टिंग जारी है)" if is_pipeline_running else "🟢 रेडी (आइडल)"
-    last_str = time.strftime('%H:%M:%S IST', time.localtime(last_run_time)) if last_run_time else "अभी तक नहीं"
+    status_str = "🟡 Active (Posting in progress)" if is_pipeline_running else "🟢 Ready (Idle)"
+    last_str = time.strftime('%H:%M:%S IST', time.localtime(last_run_time)) if last_run_time else "Not executed yet"
     
     msg = (
         f"🤖 <b>LiteAPKs MOD Agent — Control Panel</b>\n\n"
         f"👑 <b>Admin:</b> {html.escape(user_info.get('first_name', 'Admin'))} (<code>{chat_id}</code>)\n"
-        f"📢 <b>टारगेट चैनल:</b> {CHANNEL_ID}\n"
-        f"📦 <b>कुल पोस्टेड डेटाबेस:</b> <b>{len(db_items)}</b> APKs\n"
-        f"⏱️ <b>ऑटो-शेड्यूल:</b> <b>हर 30 मिनट</b> (बैकग्राउंड एक्टिव)\n"
-        f"🕒 <b>पिछला रन:</b> {last_str}\n"
-        f"⚡ <b>करंट स्टेटस:</b> {status_str}\n\n"
-        f"👇 <i>नीचे दिए गए बटन पर टैप करके आप तुरंत मैन्युअल रन शुरू कर सकते हैं:</i>"
+        f"📢 <b>Target Channel:</b> {CHANNEL_ID}\n"
+        f"📦 <b>Broadcasted Database:</b> <b>{len(db_items)}</b> APKs\n"
+        f"⏱️ <b>Auto-Schedule:</b> <b>Every 30 Minutes</b> (Background Active)\n"
+        f"🕒 <b>Last Run:</b> {last_str}\n"
+        f"⚡ <b>Status:</b> {status_str}\n\n"
+        f"👇 <i>Tap an action button below to trigger on-demand posting:</i>"
     )
     send_admin_message(msg, get_control_keyboard())
 
 def handle_stats(chat_id):
     db_items = agent.load_sent_history()
-    status_str = "🟡 रनिंग" if is_pipeline_running else "🟢 रेडी"
+    status_str = "🟡 Running" if is_pipeline_running else "🟢 Ready / Idle"
     msg = (
-        f"📊 <b>LiteAPKs Agent आँकड़े:</b>\n\n"
-        f"• <b>डेटाबेस साइज़:</b> {len(db_items)} APKs\n"
-        f"• <b>चैनल:</b> {CHANNEL_ID}\n"
-        f"• <b>अधिकतम ऐप्स प्रति रन:</b> {MAX_APKS_PER_RUN}\n"
-        f"• <b>करंट स्टेटस:</b> {status_str}\n"
-        f"• <b>30-मिनट शेड्यूलर:</b> 🟢 एक्टिव (हर 30 मिनट पर ऑटोमैटिक पोस्टिंग)"
+        f"📊 <b>LiteAPKs Agent Statistics:</b>\n\n"
+        f"• <b>Database Size:</b> {len(db_items)} APKs recorded\n"
+        f"• <b>Broadcast Channel:</b> {CHANNEL_ID}\n"
+        f"• <b>Batch Limit:</b> {MAX_APKS_PER_RUN} APKs per run\n"
+        f"• <b>Engine Status:</b> {status_str}\n"
+        f"• <b>Auto-Scheduler:</b> 🟢 Active (Autonomous every 30 minutes)"
     )
     send_admin_message(msg, get_control_keyboard())
 
 def handle_preview(chat_id):
-    send_admin_message("🔍 <i>LiteAPKs से टॉप ट्रेंडिंग ऐप्स स्कैन किए जा रहे हैं...</i>")
+    send_admin_message("🔍 <i>Scanning LiteAPKs for priority candidate apps...</i>")
     try:
         urls = agent.scrape_latest_apk_links()
         sent = agent.load_sent_history()
         candidates = [u for u in urls if u not in sent][:6]
         
         if not candidates:
-            send_admin_message("ℹ️ सभी मुख्य ऐप्स पहले से ही पोस्टेड हैं। नए ऐप्स आते ही पोस्ट होंगे।", get_control_keyboard())
+            send_admin_message("ℹ️ All top priority apps are already broadcasted. New updates will be posted as released.", get_control_keyboard())
             return
 
         preview_lines = []
@@ -122,13 +122,13 @@ def handle_preview(chat_id):
             preview_lines.append(f"{idx}. <b>{name}</b>\n   <code>{u}</code>")
 
         msg = (
-            f"🔍 <b>अगले रन के टॉप 5-6 संभावित ऐप्स (Preview):</b>\n\n" +
+            f"🔍 <b>Next Priority Candidate Apps (Preview):</b>\n\n" +
             "\n\n".join(preview_lines) +
-            "\n\n👉 <i>तुरंत पोस्ट करने के लिए नीचे 'तुरंत पोस्ट करो' दबाएं।</i>"
+            "\n\n👉 <i>Tap 'Scrape & Post Now' below to publish them immediately.</i>"
         )
         send_admin_message(msg, get_control_keyboard())
     except Exception as e:
-        send_admin_message(f"⚠️ प्रीव्यू फ़ेच करने में एरर: {e}", get_control_keyboard())
+        send_admin_message(f"⚠️ Error fetching preview: {e}", get_control_keyboard())
 
 def execute_pipeline_worker(trigger_source="Manual"):
     global is_pipeline_running, last_run_time
@@ -154,10 +154,10 @@ def execute_pipeline_worker(trigger_source="Manual"):
                 proc = data.get('processed', 0)
                 tot_db = data.get('total_db', 0)
                 msg = (
-                    f"🎉 <b>सफलतापूर्वक पोस्टिंग पूर्ण! ({trigger_source})</b>\n\n"
-                    f"✅ कुल <b>{proc}</b> नए/अपडेटेड जरूरी APKs चैनल {CHANNEL_ID} पर पोस्ट कर दिए गए हैं।\n"
-                    f"📦 डेटाबेस में अब कुल <b>{tot_db}</b> APKs सुरक्षित हैं।\n"
-                    f"⏱️ अगला रन 30 मिनट बाद ऑटोमैटिक होगा।"
+                    f"🎉 <b>Posting Completed Successfully! ({trigger_source})</b>\n\n"
+                    f"✅ Published <b>{proc}</b> new/updated APKs to channel {CHANNEL_ID}.\n"
+                    f"📦 Total database count: <b>{tot_db}</b> APKs.\n"
+                    f"⏱️ Next automated run scheduled in 30 minutes."
                 )
                 send_admin_message(msg, get_control_keyboard())
 
@@ -181,12 +181,12 @@ def execute_pipeline_worker(trigger_source="Manual"):
 def trigger_manual_run():
     global is_pipeline_running
     if is_pipeline_running:
-        send_admin_message("⚠️ <b>पाइपलाइन पहले से ही सक्रिय है!</b>\n\nकृपया मौजूदा रन पूरा होने की प्रतीक्षा करें।", get_control_keyboard())
+        send_admin_message("⚠️ <b>Pipeline is already running!</b>\n\nPlease wait for the current execution to complete.", get_control_keyboard())
         return
 
     send_admin_message(
-        "⏳ <b>मैन्युअल रन शुरू हो गया है!</b>\n\n"
-        "LiteAPKs से टॉप और जरूरी APKs स्क्रैप किए जा रहे हैं। जैसे-जैसे ऐप्स चैनल पर पोस्ट होंगे, आपको यहाँ लाइव प्रोग्रेस मिलती रहेगी...",
+        "⏳ <b>Manual Run Initiated!</b>\n\n"
+        "Scraping LiteAPKs for high-priority apps and games. You will receive real-time progress updates here as each APK is published...",
         None
     )
     t = threading.Thread(target=execute_pipeline_worker, args=("Manual Trigger",), daemon=True)
@@ -223,11 +223,11 @@ def main():
 
     # 2. Send Online Notification to Admin
     boot_msg = (
-        f"🟢 <b>LiteAPKs MOD Agent ऑनलाइन है!</b>\n\n"
-        f"• <b>टारगेट चैनल:</b> {CHANNEL_ID}\n"
-        f"• <b>30-मिनट ऑटो-शेड्यूलर:</b> एक्टिव\n"
-        f"• <b>मैन्युअल कंट्रोल:</b> एक्टिव\n\n"
-        f"👇 नीचे दिए गए मेनू से आप कभी भी 1-क्लिक में पोस्ट शुरू कर सकते हैं:"
+        f"🟢 <b>LiteAPKs MOD Agent is Online!</b>\n\n"
+        f"• <b>Target Channel:</b> {CHANNEL_ID}\n"
+        f"• <b>30-Min Auto-Scheduler:</b> Active\n"
+        f"• <b>Interactive Control Panel:</b> Ready\n\n"
+        f"👇 Tap below to trigger on-demand actions anytime:"
     )
     send_admin_message(boot_msg, get_control_keyboard())
 
@@ -262,11 +262,11 @@ def main():
 
                     # Admin authorization check
                     if user_id != str(ADMIN_CHAT_ID):
-                        answer_callback(cb_id, "⛔ अनधिकृत एक्सेस!")
+                        answer_callback(cb_id, "⛔ Unauthorized access!")
                         continue
 
                     if cb_data == 'run_now':
-                        answer_callback(cb_id, "🚀 रन शुरू हो रहा है...")
+                        answer_callback(cb_id, "🚀 Starting scraper run...")
                         trigger_manual_run()
                     elif cb_data == 'stats':
                         answer_callback(cb_id)
@@ -275,7 +275,7 @@ def main():
                         answer_callback(cb_id)
                         handle_preview(user_id)
                     elif cb_data == 'schedule_info':
-                        answer_callback(cb_id, "⏱️ शेड्यूलर हर 30 मिनट में ऑटोमैटिक पोस्ट करता है।")
+                        answer_callback(cb_id, "⏱️ Scheduler runs automatically every 30 minutes.")
                         handle_stats(user_id)
 
                 # Handle Standard Text Messages / Commands
