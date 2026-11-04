@@ -204,23 +204,30 @@ def scrape_latest_apk_links():
             r_cat = requests.get(cat_url, headers=HEADERS, timeout=8)
             if r_cat.status_code == 200:
                 cat_apps = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', r_cat.text)
-                clean_apps = [a for a in cat_apps if not is_banned_app("", a)]
-                # top 3 go to Tier 2, rest go to Tier 3
-                return cat_name, clean_apps[:3], clean_apps[3:]
+                seen_apps = []
+                for a in cat_apps:
+                    if a not in seen_apps and not is_banned_app("", a):
+                        seen_apps.append(a)
+                return cat_name, seen_apps
         except Exception:
             pass
-        return cat_name, [], []
+        return cat_name, []
 
     if all_categories:
         with ThreadPoolExecutor(max_workers=12) as executor:
             cat_results = list(executor.map(fetch_category_apps, all_categories))
-        for cat_name, top_3, rest in cat_results:
-            for a in top_3:
-                if a not in tier1_top_apps and a not in tier2_category_top_apps:
-                    tier2_category_top_apps.append(a)
-            for a in rest:
-                if a not in tier1_top_apps and a not in tier2_category_top_apps and a not in tier3_remaining_apps_and_games:
-                    tier3_remaining_apps_and_games.append(a)
+        
+        # Round-robin ranking: prioritizes rank 1 of all categories, then rank 2, rank 3...
+        # so ALL top apps of every category are in Tier 2 (Second Priority) with maximum genre diversity!
+        max_depth = max(len(apps) for _, apps in cat_results) if cat_results else 0
+        seen_tier2 = set()
+        for rank in range(max_depth):
+            for cat_name, apps in cat_results:
+                if rank < len(apps):
+                    a = apps[rank]
+                    if a not in tier1_top_apps and a not in seen_tier2:
+                        seen_tier2.add(a)
+                        tier2_category_top_apps.append(a)
 
     # 3. Tier 3: Deep Catalog Pagination for both /apps and /games (Pages 2 to 5)
     def fetch_pagination_page(p_url):
