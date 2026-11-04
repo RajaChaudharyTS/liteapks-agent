@@ -75,14 +75,17 @@ def get_control_keyboard():
         ]
     }
 
-def handle_start(chat_id, user_info):
+def handle_start(chat_id, user_info=None):
+    if user_info is None:
+        user_info = {}
     db_items = agent.load_sent_history()
     status_str = "🟡 Active (Posting in progress)" if is_pipeline_running else "🟢 Ready (Idle)"
     last_str = time.strftime('%H:%M:%S IST', time.localtime(last_run_time)) if last_run_time else "Not executed yet"
+    name = user_info.get('first_name', 'Admin')
     
     msg = (
         f"🤖 <b>LiteAPKs MOD Agent — Control Panel</b>\n\n"
-        f"👑 <b>Admin:</b> {html.escape(user_info.get('first_name', 'Admin'))} (<code>{chat_id}</code>)\n"
+        f"👑 <b>Admin:</b> {html.escape(name)} (<code>{chat_id}</code>)\n"
         f"📢 <b>Target Channel:</b> {CHANNEL_ID}\n"
         f"📦 <b>Broadcasted Database:</b> <b>{len(db_items)}</b> APKs\n"
         f"⏱️ <b>Auto-Schedule:</b> <b>Every 30 Minutes</b> (Background Active)\n"
@@ -105,7 +108,7 @@ def handle_stats(chat_id):
     )
     send_admin_message(msg, get_control_keyboard())
 
-def handle_preview(chat_id):
+def preview_worker(chat_id):
     send_admin_message("🔍 <i>Scanning LiteAPKs for priority candidate apps...</i>")
     try:
         urls = agent.scrape_latest_apk_links()
@@ -129,6 +132,9 @@ def handle_preview(chat_id):
         send_admin_message(msg, get_control_keyboard())
     except Exception as e:
         send_admin_message(f"⚠️ Error fetching preview: {e}", get_control_keyboard())
+
+def handle_preview(chat_id):
+    threading.Thread(target=preview_worker, args=(chat_id,), daemon=True).start()
 
 def execute_pipeline_worker(trigger_source="Manual"):
     global is_pipeline_running, last_run_time
@@ -236,17 +242,17 @@ def main():
     # 3. Long-polling Telegram event loop
     while True:
         try:
-            params = {'timeout': 25, 'offset': last_update_id + 1}
+            params = {'timeout': 20, 'offset': last_update_id + 1}
             url = f"{API_BASE}/getUpdates"
-            resp = requests.get(url, params=params, timeout=30)
+            resp = requests.get(url, params=params, timeout=25)
             
             if resp.status_code != 200:
-                time.sleep(3)
+                time.sleep(2)
                 continue
 
             data = resp.json()
             if not data.get('ok'):
-                time.sleep(3)
+                time.sleep(2)
                 continue
 
             for update in data.get('result', []):
@@ -269,10 +275,10 @@ def main():
                         answer_callback(cb_id, "🚀 Starting scraper run...")
                         trigger_manual_run()
                     elif cb_data == 'stats':
-                        answer_callback(cb_id)
+                        answer_callback(cb_id, "📊 Loading stats...")
                         handle_stats(user_id)
                     elif cb_data == 'preview':
-                        answer_callback(cb_id)
+                        answer_callback(cb_id, "🔍 Scanning candidate apps...")
                         handle_preview(user_id)
                     elif cb_data == 'schedule_info':
                         answer_callback(cb_id, "⏱️ Scheduler runs automatically every 30 minutes.")
@@ -306,11 +312,11 @@ def main():
                     else:
                         handle_start(chat_id, from_user)
 
-        except requests.exceptions.RequestException as re_err:
-            time.sleep(3)
+        except requests.exceptions.RequestException:
+            time.sleep(2)
         except Exception as e:
             print(f"[Bot Polling Exception]: {e}")
-            time.sleep(3)
+            time.sleep(2)
 
 if __name__ == "__main__":
     main()
