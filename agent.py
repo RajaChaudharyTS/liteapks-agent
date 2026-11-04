@@ -736,7 +736,7 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False):
         install_note = f"\n📦 <b>Package:</b> {pkg_type}\n💡 <i>Note: Install via XAPK Installer / extract OBB if needed.</i>" if is_xapk else ""
 
         if devuploads_url:
-            caption = (
+            header_part = (
                 f"{update_badge}"
                 f"📱 <b>{meta['title']}</b>\n\n"
                 f"🏷️ <b>Version:</b> {meta['version']}\n"
@@ -744,17 +744,21 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False):
                 f"📂 <b>Category:</b> {meta['app_type']}{install_note}\n\n"
                 f"⚡ <b>MOD & Key Features:</b>\n"
                 f"{features_text}\n\n"
-                f"📖 <b>Description:</b>\n"
-                f"{meta['description'] or 'Enjoy the latest version with full unlocked features on your Android device.'}\n\n"
+            )
+            footer_part = (
                 f"📥 <b>Download {pkg_type} (High Speed):</b>\n"
                 f"👉 {devuploads_url}\n\n"
                 f"{hashtags}"
             )
-            # Safe boundary check: Telegram max caption is 1024 characters
-            if len(caption) > 1000:
-                caption = caption[:995] + "..."
+            desc_raw = meta['description'] or 'Enjoy the latest version with full unlocked features on your Android device.'
+            # Dynamically budget description so download link & tags are NEVER truncated
+            allowed_desc_len = 1000 - len(header_part) - len(footer_part) - 25
+            if allowed_desc_len < 60:
+                allowed_desc_len = 60
+            if len(desc_raw) > allowed_desc_len:
+                desc_raw = desc_raw[:allowed_desc_len - 3] + "..."
 
-            # Send Photo with Caption (No buttons attached as requested)
+            caption = f"{header_part}📖 <b>Description:</b>\n{desc_raw}\n\n{footer_part}\n"
             posted_success = False
             if os.path.exists(img_path):
                 for attempt in range(2):
@@ -806,6 +810,9 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False):
                         print(f"❌ Telegram sendMessage Error: {r_msg.json()}")
                 except Exception as e:
                     print(f"[Send Message Error]: {e}")
+
+            if not posted_success:
+                send_admin_alert(f"⚠️ <b>Telegram Broadcast Failed</b>\nApp: {meta['title']} (v{meta['version']})\nTarget: {chat}\nCheck bot admin permissions in channel.")
 
             return posted_success
 
