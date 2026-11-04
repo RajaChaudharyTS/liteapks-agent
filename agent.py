@@ -152,6 +152,66 @@ ALL_BUILTIN_CATEGORIES = [
     ("Word Games", "https://liteapks.com/games/word")
 ]
 
+# Mapping category slugs to rich, descriptive App Types ("किस टाइप का ऐप है")
+APP_TYPE_MAPPING = {
+    # Video & Photo
+    'video-players-editors': 'Video Player & Video Editor',
+    'photography': 'Photo & Video Editor',
+    
+    # Audio & Music
+    'music-audio': 'Music Player & Audio Streaming',
+    'music': 'Music & Rhythm Game',
+    
+    # Action, Adventure & Arcade Games
+    'action': 'Action & Shooting Game',
+    'adventure': 'Adventure & Exploration Game',
+    'arcade': 'Arcade & Casual Game',
+    'board': 'Board & Tabletop Game',
+    'card': 'Card & Casino Game',
+    'casino': 'Casino & Slots Game',
+    'casual': 'Casual & Relaxing Game',
+    'educational': 'Educational & Learning Game',
+    'puzzle': 'Brain & Puzzle Game',
+    'racing': 'Racing & Driving Game',
+    'role-playing': 'Role Playing Game (RPG)',
+    'simulation': 'Simulation & Life Game',
+    'sports': 'Sports & Football Game',
+    'strategy': 'Strategy & Tactical Battle Game',
+    'trivia': 'Trivia & Quiz Game',
+    'word': 'Word & Puzzle Game',
+    
+    # System, Utilities & Productivity
+    'tools': 'Android Utility & System Tool',
+    'productivity': 'Productivity & Office Tool',
+    'communication': 'Communication & Messaging App',
+    'social': 'Social Media & Networking',
+    'personalization': 'Launcher & Wallpaper Customization',
+    'entertainment': 'Movies & OTT Video Streaming',
+    'health-fitness': 'Health, Workout & Fitness Tracker',
+    'education': 'Education & Language Learning',
+    'art-design': 'Art, Graphic & Drawing Editor',
+    'comics': 'Manga & Comic Reader',
+    'business': 'Business & Document Scanner',
+    'finance': 'Finance, Crypto & Stock Tracker',
+    'auto-vehicles': 'Automotive & Vehicle Tool',
+    'maps-navigation': 'GPS Navigation & Offline Maps',
+    'weather': 'Weather Forecast & Live Radar',
+    'beauty': 'Beauty & Selfie Photo Editor',
+    'books-reference': 'E-Books & Reference Library',
+    'dating': 'Dating & Social Meetup',
+    'lifestyle': 'Lifestyle & Daily Routine',
+    'house-home': 'Smart Home & Interior Design',
+    'shopping': 'Online Shopping & Deals',
+    'food-drink': 'Food Delivery & Recipes',
+    'medical': 'Medical & Health Reference',
+    'news-magazines': 'News & Magazine Reader',
+    'parenting': 'Parenting & Child Care Tracker',
+    'events': 'Events & Ticket Booking',
+    'libraries-demo': 'Developer Tools & Demo',
+    'emulator': 'Gaming Console Emulator',
+    'sport': 'Live Sports Streaming & Scores'
+}
+
 def scrape_latest_apk_links():
     """Scrapes LiteAPKs with strict Priority per user requirements:
     1. Tier 1 (First Priority):
@@ -296,11 +356,28 @@ def extract_app_metadata(app_url):
         if len(short_desc) > 220:
             short_desc = short_desc[:217] + "..."
 
-        # 4. Info Bar Details (Version, Size, Category)
+        # 4. Info Bar Details (Version, Size, App Type)
         labels = re.findall(r'<div class="info-bar-label">\s*([^<]+)\s*</div>[\s\S]*?<div class="info-bar-value[^"]*">\s*([^<]+)\s*</div>', html)
         info = {l.strip().upper(): v.strip() for l, v in labels}
         version = info.get('VERSION', 'Latest')
-        category = info.get('GENRE', 'App / Game')
+
+        # Extract Real App Type from category link (info-bar-sub or breadcrumb)
+        cat_match = re.search(r'<div class=[\"\']info-bar-sub[\"\'][^>]*>\s*<a[^>]+href=[\"\']https://liteapks\.com/(?:apps|games)/([a-zA-Z0-9\-_]+)[\"\'][^>]*>([^<]+)</a>', html)
+        if not cat_match:
+            cat_match = re.search(r'<a[^>]+href=[\"\']https://liteapks\.com/(?:apps|games)/([a-zA-Z0-9\-_]+)[\"\'][^>]*>([^<]+)</a>', html)
+
+        slug = cat_match.group(1).lower() if cat_match else ""
+        raw_cat = clean_text_for_telegram(cat_match.group(2).strip()) if cat_match else ""
+
+        # Descriptive App Type resolution ("किस टाइप का ऐप है")
+        app_type = APP_TYPE_MAPPING.get(slug)
+        if not app_type and raw_cat:
+            if '/games/' in html or 'game' in slug:
+                app_type = f"{raw_cat} Game" if not raw_cat.lower().endswith('game') and not raw_cat.lower().endswith('games') else raw_cat
+            else:
+                app_type = f"{raw_cat} App" if not raw_cat.lower().endswith('app') and not raw_cat.lower().endswith('apps') else raw_cat
+        if not app_type:
+            app_type = "Android Game" if ('/games/' in html or 'game' in app_title.lower()) else "Android Application"
 
         # 5. Download Page Target
         dl_m = re.findall(r'href=[\"\'](https://liteapks\.com/download/[^\"\']+)[\"\']', html)
@@ -338,7 +415,8 @@ def extract_app_metadata(app_url):
             'image_url': image_url,
             'description': short_desc,
             'version': version,
-            'category': category,
+            'category': app_type,
+            'app_type': app_type,
             'features': features[:5],
             'download_page': download_page
         }
@@ -580,7 +658,7 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False):
                 f"📱 <b>{meta['title']}</b>\n\n"
                 f"🏷️ <b>Version:</b> {meta['version']}\n"
                 f"💾 <b>Size:</b> {apk_info['size_mb']} MB\n"
-                f"📂 <b>Category:</b> {meta['category']}\n\n"
+                f"🎯 <b>App Type:</b> {meta['app_type']}\n\n"
                 f"⚡ <b>MOD & Key Features:</b>\n"
                 f"{features_text}\n\n"
                 f"📖 <b>Description:</b>\n"
@@ -653,7 +731,7 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False):
             f"📱 <b>{meta['title']}</b>\n\n"
             f"🏷️ <b>Version:</b> {meta['version']}\n"
             f"💾 <b>Size:</b> {apk_info['size_mb']} MB\n"
-            f"📂 <b>Category:</b> {meta['category']}\n"
+            f"🎯 <b>App Type:</b> {meta['app_type']}\n\n"
             f"⚡ <b>MOD & Key Features:</b>\n"
             f"{features_text}\n\n"
             f"📖 <b>Description:</b>\n"
