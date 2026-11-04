@@ -1,12 +1,20 @@
 import os
+import sys
 import re
 import json
+
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 import time
 import base64
 import urllib.parse
 import tempfile
 import subprocess
 import requests
+from concurrent.futures import ThreadPoolExecutor
 from config import (
     BOT_TOKEN,
     CHANNEL_ID,
@@ -83,64 +91,93 @@ def clean_text_for_telegram(text):
     return text
 
 def scrape_latest_apk_links():
-    """Scrapes LiteAPKs with strict Priority:
-    1. Tier 1 (Highest): Homepage Top Apps ('Indispensable on your phone' / 'Must have')
-    2. Tier 2 (High): Top Apps & Top Games of each major category (/apps & /games top sections)
-    3. Tier 3 (Standard): General & Latest updates (pagination pages)
+    """Scrapes LiteAPKs with strict Priority per user requirements:
+    1. Tier 1 (First Priority):
+       - Main 'Top Apps' from /apps (e.g. CapCut, Alight Motion, YouTube ReVanced, Spotify, Truecaller)
+       - Main 'Top Games' from /games (e.g. Roblox, 8 Ball Pool, Shadow Fight 2, Subway Surfers)
+       - Homepage 'Indispensable on your phone' & 'Must have collection'
+    2. Tier 2 (Second Priority):
+       - Category-wise Top Apps: Dynamically scrapes ALL subcategories under /apps and /games:
+         (Art & Design, Auto & Vehicles, Beauty, Books & Reference, Business, Comics, Communication,
+          Education, Entertainment, Finance, Food & Drink, Health & Fitness, House & Home, Lifestyle,
+          Maps & Navigation, Music & Audio, News & Magazines, Personalization, Photography, Productivity,
+          Social, Tools, Travel & Local, Video Players & Editors, Weather, and all Game genres).
+         Fetches top 2-3 highest ranked apps from EACH category in parallel.
+    3. Tier 3 (Third Priority):
+       - Deep Catalog pagination (/apps/page/2, /games/page/2, etc.) for general updates.
     """
-    top_priority_urls = []
-    category_top_urls = []
-    general_urls = []
+    tier1_top_apps = []
+    tier2_category_top_apps = []
+    tier3_general = []
 
-    # 1. Tier 1: Homepage Top Apps ("Indispensable on your phone", "Must have collection")
-    try:
-        r_home = requests.get(f"{SOURCE_BASE_URL}/", headers=HEADERS, timeout=15)
-        if r_home.status_code == 200:
-            html = r_home.text
-            top_sec = re.search(r'(?:Indispensable|Must have)[\s\S]*?(?:Lastest Games|Lastest Apps)', html)
-            if top_sec:
-                found = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', top_sec.group(0))
-                for u in found:
-                    if not is_banned_app("", u) and u not in top_priority_urls:
-                        top_priority_urls.append(u)
-            
-            all_home = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', html)
-            for u in all_home:
-                if not is_banned_app("", u) and u not in top_priority_urls and u not in general_urls:
-                    general_urls.append(u)
-    except Exception as e:
-        print(f"[Scraper Error] Homepage: {e}")
-
-    # 2. Tier 2: Category Top Apps & Top Games (/apps and /games first sections)
-    for cat_page in [f"{SOURCE_BASE_URL}/apps", f"{SOURCE_BASE_URL}/games"]:
+    # 1. Tier 1: Main "Top Apps" from /apps, /games and Homepage
+    for root_url in [f"{SOURCE_BASE_URL}/apps", f"{SOURCE_BASE_URL}/games", f"{SOURCE_BASE_URL}/"]:
         try:
-            r_cat = requests.get(cat_page, headers=HEADERS, timeout=15)
-            if r_cat.status_code == 200:
-                found = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', r_cat.text)
+            r = requests.get(root_url, headers=HEADERS, timeout=10)
+            if r.status_code == 200:
+                found = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', r.text)
                 for u in found[:15]:
-                    if not is_banned_app("", u) and u not in top_priority_urls and u not in category_top_urls:
-                        category_top_urls.append(u)
-                for u in found[15:]:
-                    if not is_banned_app("", u) and u not in top_priority_urls and u not in category_top_urls and u not in general_urls:
-                        general_urls.append(u)
+                    if not is_banned_app("", u) and u not in tier1_top_apps:
+                        tier1_top_apps.append(u)
         except Exception as e:
-            print(f"[Scraper Error] {cat_page}: {e}")
+            print(f"[Tier 1 Scraper Error] {root_url}: {e}")
 
-    # 3. Tier 3: Pagination / Deep Catalog (Page 2 & 3)
+    # 2. Tier 2: Discover ALL Subcategories across /apps and /games and scrape their Top Apps
+    all_categories = []
+    seen_cat_urls = set()
+    for hub_url in [f"{SOURCE_BASE_URL}/apps", f"{SOURCE_BASE_URL}/games"]:
+        try:
+            r_hub = requests.get(hub_url, headers=HEADERS, timeout=10)
+            if r_hub.status_code == 200:
+                html = r_hub.text
+                idx = html.find('cat-filter-wrap')
+                if idx != -1:
+                    end_idx = html.find('</div>', idx)
+                    wrap_html = html[idx:end_idx]
+                    cat_links = re.findall(r'href=[\"\'](https://liteapks\.com/(?:apps|games)/[a-zA-Z0-9\-_]+)[\"\'][^>]*>\s*([^<]+)\s*</a>', wrap_html)
+                    for l, t in cat_links:
+                        t_clean = t.replace('&amp;', '&').strip()
+                        if l not in seen_cat_urls and not l.endswith('/apps') and not l.endswith('/games') and not is_banned_app(t_clean, l):
+                            seen_cat_urls.add(l)
+                            all_categories.append((t_clean, l))
+        except Exception as e:
+            print(f"[Tier 2 Category Discovery Error] {hub_url}: {e}")
+
+    def fetch_category_top_apps(cat_item):
+        cat_name, cat_url = cat_item
+        try:
+            r_cat = requests.get(cat_url, headers=HEADERS, timeout=8)
+            if r_cat.status_code == 200:
+                cat_apps = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', r_cat.text)
+                clean_apps = [a for a in cat_apps if not is_banned_app("", a)]
+                return cat_name, clean_apps[:3]
+        except Exception:
+            pass
+        return cat_name, []
+
+    if all_categories:
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            cat_results = list(executor.map(fetch_category_top_apps, all_categories))
+        for cat_name, apps in cat_results:
+            for a in apps:
+                if a not in tier1_top_apps and a not in tier2_category_top_apps:
+                    tier2_category_top_apps.append(a)
+
+    # 3. Tier 3: Deep Catalog (Pagination Pages)
     for page in [f"{SOURCE_BASE_URL}/apps/page/2", f"{SOURCE_BASE_URL}/games/page/2", f"{SOURCE_BASE_URL}/apps/page/3", f"{SOURCE_BASE_URL}/games/page/3"]:
         try:
-            r_p = requests.get(page, headers=HEADERS, timeout=15)
+            r_p = requests.get(page, headers=HEADERS, timeout=10)
             if r_p.status_code == 200:
                 found = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', r_p.text)
                 for u in found:
-                    if not is_banned_app("", u) and u not in top_priority_urls and u not in category_top_urls and u not in general_urls:
-                        general_urls.append(u)
+                    if not is_banned_app("", u) and u not in tier1_top_apps and u not in tier2_category_top_apps and u not in tier3_general:
+                        tier3_general.append(u)
         except Exception as e:
-            print(f"[Scraper Error] {page}: {e}")
+            print(f"[Tier 3 Catalog Error] {page}: {e}")
 
     # Merge in strict Priority Order
-    final_prioritized = top_priority_urls + category_top_urls + general_urls
-    print(f"📊 Scraper Priority Queue: {len(top_priority_urls)} Top Apps, {len(category_top_urls)} Category Top Apps, {len(general_urls)} General Apps.")
+    final_prioritized = tier1_top_apps + tier2_category_top_apps + tier3_general
+    print(f"📊 Scraper Priority Queue: {len(tier1_top_apps)} Main Top Apps (Tier 1), {len(tier2_category_top_apps)} Category-wise Top Apps across {len(all_categories)} categories (Tier 2), {len(tier3_general)} General Catalog Apps (Tier 3).")
     return final_prioritized
 
 def extract_app_metadata(app_url):
