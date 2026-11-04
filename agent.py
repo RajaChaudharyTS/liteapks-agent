@@ -269,10 +269,21 @@ def scrape_latest_apk_links():
     def fetch_category_apps(cat_item):
         cat_name, cat_url = cat_item
         try:
-            r_cat = requests.get(cat_url, headers=HEADERS, timeout=8)
+            r_cat = requests.get(cat_url, headers=HEADERS, timeout=10)
             if r_cat.status_code == 200:
-                cat_apps = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', r_cat.text)
+                html = r_cat.text
                 seen_apps = []
+
+                # 1. Explicitly extract Official Top Apps section (scroll-section / Top <Category>)
+                scroll_m = re.search(r'<div[^>]*class=[\"\'][^\"\']*scroll-section[^\"\']*[\"\'][^>]*>([\s\S]*?)</div>\s*</div>', html)
+                if scroll_m:
+                    sec_links = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', scroll_m.group(1))
+                    for a in sec_links:
+                        if a not in seen_apps and not is_banned_app("", a):
+                            seen_apps.append(a)
+
+                # 2. Add all remaining apps from the category page grid
+                cat_apps = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', html)
                 for a in cat_apps:
                     if a not in seen_apps and not is_banned_app("", a):
                         seen_apps.append(a)
