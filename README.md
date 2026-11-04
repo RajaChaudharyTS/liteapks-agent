@@ -1,6 +1,6 @@
 # 📱 LiteAPKs to Telegram & DevUploads Autonomous Agent
 
-An autonomous AI agent that monitors `liteapks.com` for newly published and updated Android APKs, automatically uploads the `.apk` file to **DevUploads** (with Pay-Per-Download monetization), extracts clean metadata and high-resolution posters, and broadcasts them to your Telegram Channel (`@getmodpc1`) with direct download buttons and viral hashtags!
+An autonomous AI agent that monitors `liteapks.com` for newly published and updated Android APKs, automatically uploads the `.apk` file to **DevUploads** (with Pay-Per-Download monetization), extracts clean metadata and high-resolution posters, and broadcasts them to your Telegram Channel (`@your_channel_username`) with direct download buttons and viral hashtags!
 
 ---
 
@@ -16,7 +16,7 @@ An autonomous AI agent that monitors `liteapks.com` for newly published and upda
    * Hosting cracked `.apk` files directly inside Telegram chats carries high risk of channel bans.
    * Sharing clean preview cards with off-site download links keeps your channel 100% safe.
 4. **🏷️ Dynamic Smart Hashtags:**
-   * Auto-generates relevant tags (`#Spotify #MusicPlayer #ModAPK #Android #PremiumUnlocked #GetModPC`) for top ranking in Telegram Search.
+   * Auto-generates relevant tags (`#Spotify #MusicPlayer #ModAPK #Android #PremiumUnlocked #YourChannelTag`) for top ranking in Telegram Search.
 5. **🔒 100% Private & Secure (Zero Leaks):**
    * All API keys and tokens are loaded strictly from `.env` (locally) or GitHub Actions Secrets (in the cloud).
    * `.env` is `.gitignore`d so no secrets are ever committed or pushed to Git.
@@ -42,8 +42,8 @@ In your GitHub repository:
 1. Go to **Settings > Secrets and variables > Actions**.
 2. Click **New repository secret** and add:
    * `TELEGRAM_BOT_TOKEN`: *(Your Telegram Bot Token)*
-   * `TELEGRAM_CHANNEL_ID`: `-1002359898832` *(Or your channel @username)*
-   * `ADMIN_CHAT_ID`: `669644885`
+   * `TELEGRAM_CHANNEL_ID`: `@your_channel_or_id` *(Or your channel @username)*
+   * `ADMIN_CHAT_ID`: `your_telegram_user_id`
    * `DEVUPLOADS_API_KEY`: *(Your DevUploads API Key)*
 
 ### Step 3: 24/7 Automation Active!
