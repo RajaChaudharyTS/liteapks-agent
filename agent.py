@@ -97,20 +97,22 @@ def scrape_latest_apk_links():
        - Main 'Top Games' from /games (e.g. Roblox, 8 Ball Pool, Shadow Fight 2, Subway Surfers)
        - Homepage 'Indispensable on your phone' & 'Must have collection'
     2. Tier 2 (Second Priority):
-       - Category-wise Top Apps: Dynamically scrapes ALL subcategories under /apps and /games:
+       - Category-wise Top Apps & Games: Dynamically scrapes ALL 55 subcategories under /apps and /games:
          (Art & Design, Auto & Vehicles, Beauty, Books & Reference, Business, Comics, Communication,
           Education, Entertainment, Finance, Food & Drink, Health & Fitness, House & Home, Lifestyle,
           Maps & Navigation, Music & Audio, News & Magazines, Personalization, Photography, Productivity,
           Social, Tools, Travel & Local, Video Players & Editors, Weather, and all Game genres).
-         Fetches top 2-3 highest ranked apps from EACH category in parallel.
-    3. Tier 3 (Third Priority):
-       - Deep Catalog pagination (/apps/page/2, /games/page/2, etc.) for general updates.
+         Fetches top 3 highest ranked apps/games from EACH category in parallel.
+    3. Tier 3 (Third Priority - All Remaining Apps & Games):
+       - All remaining apps and games from every category (apps after top 3 in all 55 categories).
+       - Deep catalog pagination for both /apps (pages 2 to 5) and /games (pages 2 to 5).
+       - Ensures all remaining unposted apps and games are continuously posted!
     """
     tier1_top_apps = []
     tier2_category_top_apps = []
-    tier3_general = []
+    tier3_remaining_apps_and_games = []
 
-    # 1. Tier 1: Main "Top Apps" from /apps, /games and Homepage
+    # 1. Tier 1: Main "Top Apps" and "Top Games" from /apps, /games and Homepage
     for root_url in [f"{SOURCE_BASE_URL}/apps", f"{SOURCE_BASE_URL}/games", f"{SOURCE_BASE_URL}/"]:
         try:
             r = requests.get(root_url, headers=HEADERS, timeout=10)
@@ -119,10 +121,13 @@ def scrape_latest_apk_links():
                 for u in found[:15]:
                     if not is_banned_app("", u) and u not in tier1_top_apps:
                         tier1_top_apps.append(u)
+                for u in found[15:]:
+                    if not is_banned_app("", u) and u not in tier1_top_apps and u not in tier3_remaining_apps_and_games:
+                        tier3_remaining_apps_and_games.append(u)
         except Exception as e:
             print(f"[Tier 1 Scraper Error] {root_url}: {e}")
 
-    # 2. Tier 2: Discover ALL Subcategories across /apps and /games and scrape their Top Apps
+    # 2. Tier 2 & 3: Discover ALL Subcategories across /apps and /games
     all_categories = []
     seen_cat_urls = set()
     for hub_url in [f"{SOURCE_BASE_URL}/apps", f"{SOURCE_BASE_URL}/games"]:
@@ -143,41 +148,56 @@ def scrape_latest_apk_links():
         except Exception as e:
             print(f"[Tier 2 Category Discovery Error] {hub_url}: {e}")
 
-    def fetch_category_top_apps(cat_item):
+    def fetch_category_apps(cat_item):
         cat_name, cat_url = cat_item
         try:
             r_cat = requests.get(cat_url, headers=HEADERS, timeout=8)
             if r_cat.status_code == 200:
                 cat_apps = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', r_cat.text)
                 clean_apps = [a for a in cat_apps if not is_banned_app("", a)]
-                return cat_name, clean_apps[:3]
+                # top 3 go to Tier 2, rest go to Tier 3
+                return cat_name, clean_apps[:3], clean_apps[3:]
         except Exception:
             pass
-        return cat_name, []
+        return cat_name, [], []
 
     if all_categories:
         with ThreadPoolExecutor(max_workers=10) as executor:
-            cat_results = list(executor.map(fetch_category_top_apps, all_categories))
-        for cat_name, apps in cat_results:
-            for a in apps:
+            cat_results = list(executor.map(fetch_category_apps, all_categories))
+        for cat_name, top_3, rest in cat_results:
+            for a in top_3:
                 if a not in tier1_top_apps and a not in tier2_category_top_apps:
                     tier2_category_top_apps.append(a)
+            for a in rest:
+                if a not in tier1_top_apps and a not in tier2_category_top_apps and a not in tier3_remaining_apps_and_games:
+                    tier3_remaining_apps_and_games.append(a)
 
-    # 3. Tier 3: Deep Catalog (Pagination Pages)
-    for page in [f"{SOURCE_BASE_URL}/apps/page/2", f"{SOURCE_BASE_URL}/games/page/2", f"{SOURCE_BASE_URL}/apps/page/3", f"{SOURCE_BASE_URL}/games/page/3"]:
+    # 3. Tier 3: Deep Catalog Pagination for both /apps and /games (Pages 2 to 5)
+    def fetch_pagination_page(p_url):
         try:
-            r_p = requests.get(page, headers=HEADERS, timeout=10)
+            r_p = requests.get(p_url, headers=HEADERS, timeout=8)
             if r_p.status_code == 200:
-                found = re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', r_p.text)
-                for u in found:
-                    if not is_banned_app("", u) and u not in tier1_top_apps and u not in tier2_category_top_apps and u not in tier3_general:
-                        tier3_general.append(u)
-        except Exception as e:
-            print(f"[Tier 3 Catalog Error] {page}: {e}")
+                return re.findall(r'href=[\"\'](https://liteapks\.com/[a-zA-Z0-9\-_]+\.html)[\"\']', r_p.text)
+        except Exception:
+            pass
+        return []
+
+    pagination_urls = []
+    for p in range(2, 6):
+        pagination_urls.append(f"{SOURCE_BASE_URL}/apps/page/{p}")
+        pagination_urls.append(f"{SOURCE_BASE_URL}/games/page/{p}")
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        page_results = list(executor.map(fetch_pagination_page, pagination_urls))
+
+    for p_apps in page_results:
+        for a in p_apps:
+            if not is_banned_app("", a) and a not in tier1_top_apps and a not in tier2_category_top_apps and a not in tier3_remaining_apps_and_games:
+                tier3_remaining_apps_and_games.append(a)
 
     # Merge in strict Priority Order
-    final_prioritized = tier1_top_apps + tier2_category_top_apps + tier3_general
-    print(f"📊 Scraper Priority Queue: {len(tier1_top_apps)} Main Top Apps (Tier 1), {len(tier2_category_top_apps)} Category-wise Top Apps across {len(all_categories)} categories (Tier 2), {len(tier3_general)} General Catalog Apps (Tier 3).")
+    final_prioritized = tier1_top_apps + tier2_category_top_apps + tier3_remaining_apps_and_games
+    print(f"📊 Scraper Priority Queue: {len(tier1_top_apps)} Main Top Apps & Games (Tier 1), {len(tier2_category_top_apps)} Category-wise Top Apps & Games (Tier 2), {len(tier3_remaining_apps_and_games)} Remaining Apps & Games (Tier 3). Total: {len(final_prioritized)} candidates.")
     return final_prioritized
 
 def extract_app_metadata(app_url):
