@@ -2,9 +2,8 @@ name: LiteAPKs to Telegram Auto-Poster
 
 on:
   schedule:
-    # Runs at off-peak minutes (every ~15 minutes: 11, 26, 41, 56)
-    # Avoiding the global :00 / :30 queue crush completely eliminates the 5-8 hour delays!
-    - cron: '11,26,41,56 * * * *'
+    # Runs every 20 minutes on standard POSIX step intervals (keeps queue fresh & prevents delays)
+    - cron: '*/20 * * * *'
   workflow_dispatch: # Allows manual trigger from GitHub UI anytime
 
 concurrency:
@@ -17,7 +16,7 @@ permissions:
 jobs:
   scrape-and-post:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
 
     steps:
       - name: Checkout Repository
@@ -48,4 +47,4 @@ jobs:
           git config --global user.name "LiteAPKs-Agent-Bot"
           git config --global user.email "bot@liteapks-agent.local"
           git add sent_apks.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: update sent APKs database [skip ci]" && git pull --rebase && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: update sent APKs database" && git pull --rebase && git push)
