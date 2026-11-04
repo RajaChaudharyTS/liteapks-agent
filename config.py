@@ -12,8 +12,8 @@ if os.path.exists(_env_path):
 
 # Telegram Configuration (Loaded securely from Environment / Secrets)
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN")
-CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID") or os.getenv("CHANNEL_ID", "-1002359898832")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "669644885")
+CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID") or os.getenv("CHANNEL_ID")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 # DevUploads Configuration (Loaded securely from Environment / Secrets)
 DEVUPLOADS_API_KEY = os.getenv("DEVUPLOADS_API_KEY")

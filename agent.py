@@ -1,3 +1,18 @@
+def send_admin_alert(message):
+    """Sends immediate SOS notifications to Admin Telegram chat if any error occurs."""
+    if not BOT_TOKEN or not ADMIN_CHAT_ID:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            'chat_id': ADMIN_CHAT_ID,
+            'text': f"🚨 <b>LiteAPKs Agent SOS Alert</b>\n\n{message}",
+            'parse_mode': 'HTML'
+        }
+        requests.post(url, data=payload, timeout=10)
+    except Exception as ae:
+        print(f"[Admin Alert Exception]: {ae}")
+
 import os
 import sys
 import re
@@ -69,8 +84,11 @@ def load_sent_history():
 
 def save_sent_history(sent_set):
     try:
+        items = list(sent_set)
+        if len(items) > 4000:
+            items = items[-4000:]
         with open(DATABASE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(list(sent_set), f, indent=2)
+            json.dump(items, f, indent=2)
     except Exception as e:
         print(f"[Database Save Error]: {e}")
 
@@ -521,11 +539,22 @@ def resolve_direct_apk_url(download_page_url):
 
         size_mb = content_length / (1024 * 1024)
 
+        # Determine real extension (.apk, .xapk, .zip, .apks)
+        path_lower = parsed.path.lower()
+        file_ext = ".apk"
+        if path_lower.endswith(".xapk"):
+            file_ext = ".xapk"
+        elif path_lower.endswith(".zip"):
+            file_ext = ".zip"
+        elif path_lower.endswith(".apks"):
+            file_ext = ".apks"
+
         return {
             'download_url': final_dl_url,
             'referer': target_page,
             'size_bytes': content_length,
-            'size_mb': round(size_mb, 2)
+            'size_mb': round(size_mb, 2),
+            'file_ext': file_ext
         }
     except Exception as e:
         print(f"[Direct URL Resolution Error] {download_page_url}: {e}")
@@ -671,7 +700,8 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False):
                 print(f"[Image Download Warning]: {e}")
 
         # 2. Download APK File
-        clean_file_name = re.sub(r'[^a-zA-Z0-9\._\-]', '_', f"{meta['title']}_{meta['version']}.apk")
+        ext = apk_info.get('file_ext', '.apk')
+        clean_file_name = re.sub(r'[^a-zA-Z0-9\._\-]', '_', f"{meta['title']}_{meta['version']}{ext}")
         apk_path = os.path.join(tmp_dir, clean_file_name)
 
         print(f"Downloading APK: {clean_file_name} ({apk_info['size_mb']} MB)...")
@@ -689,6 +719,8 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False):
 
         # 3. DevUploads Mode (If DevUploads API key is configured)
         devuploads_url = upload_to_devuploads(apk_path, clean_file_name)
+        if DEVUPLOADS_API_KEY and not devuploads_url:
+            send_admin_alert(f"⚠️ <b>DevUploads Upload Failed</b>\nApp: {meta['title']} ({meta['version']})\nSize: {apk_info['size_mb']} MB\nLink: {meta.get('download_page', '')}")
         
         # Free disk storage immediately after upload
         cleanup_storage([apk_path])
@@ -698,18 +730,23 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False):
         features_text = "\n".join([f"• {f}" for f in features_list])
         update_badge = "🔄 <b>NEW UPDATE RELEASED!</b>\n\n" if is_update else ""
 
+        ext = apk_info.get('file_ext', '.apk')
+        is_xapk = ext in ['.xapk', '.zip', '.apks']
+        pkg_type = ext.upper().replace('.', '')
+        install_note = f"\n📦 <b>Package:</b> {pkg_type}\n💡 <i>Note: Install via XAPK Installer / extract OBB if needed.</i>" if is_xapk else ""
+
         if devuploads_url:
             caption = (
                 f"{update_badge}"
                 f"📱 <b>{meta['title']}</b>\n\n"
                 f"🏷️ <b>Version:</b> {meta['version']}\n"
                 f"💾 <b>Size:</b> {apk_info['size_mb']} MB\n"
-                f"📂 <b>Category:</b> {meta['app_type']}\n\n"
+                f"📂 <b>Category:</b> {meta['app_type']}{install_note}\n\n"
                 f"⚡ <b>MOD & Key Features:</b>\n"
                 f"{features_text}\n\n"
                 f"📖 <b>Description:</b>\n"
                 f"{meta['description'] or 'Enjoy the latest version with full unlocked features on your Android device.'}\n\n"
-                f"📥 <b>Download APK (High Speed):</b>\n"
+                f"📥 <b>Download {pkg_type} (High Speed):</b>\n"
                 f"👉 {devuploads_url}\n\n"
                 f"{hashtags}"
             )
