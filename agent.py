@@ -554,7 +554,7 @@ def upload_to_devuploads(apk_path, file_name):
                 '-F', 'utype=reg',
                 '-F', f'file_0=@{apk_path};filename={file_name}'
             ]
-            p = subprocess.run(cmd, capture_output=True, text=True, timeout=360)
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
             if p.returncode == 0 and p.stdout:
                 res = json.loads(p.stdout)
                 if res and isinstance(res, list) and res[0].get('file_code'):
@@ -570,7 +570,7 @@ def upload_to_devuploads(apk_path, file_name):
                 upload_url,
                 data={'sess_id': sess_id, 'utype': 'reg'},
                 files={'file_0': (file_name, f_up, 'application/vnd.android.package-archive')},
-                timeout=360
+                timeout=600
             )
             res = r_up.json()
             if res and isinstance(res, list) and res[0].get('file_code'):
@@ -675,13 +675,13 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False):
         apk_path = os.path.join(tmp_dir, clean_file_name)
 
         print(f"Downloading APK: {clean_file_name} ({apk_info['size_mb']} MB)...")
-        r_apk = requests.get(apk_info['download_url'], headers={'User-Agent': HEADERS['User-Agent'], 'Referer': apk_info['referer']}, stream=True, timeout=180)
+        r_apk = requests.get(apk_info['download_url'], headers={'User-Agent': HEADERS['User-Agent'], 'Referer': apk_info['referer']}, stream=True, timeout=600)
         if r_apk.status_code != 200:
             print(f"[APK Download Failed]: HTTP {r_apk.status_code}")
             return False
 
         with open(apk_path, 'wb') as f:
-            for chunk in r_apk.iter_content(chunk_size=1024 * 512):
+            for chunk in r_apk.iter_content(chunk_size=1024 * 1024):
                 if chunk:
                     f.write(chunk)
 
@@ -869,16 +869,14 @@ def run_pipeline(demo_target=None):
 
         print(f"Found APK: {meta['title']} (v{version}) | Size: {apk_info['size_mb']} MB")
 
-        # Safeguard: Skip massive files (> 350 MB) to keep 10-post batch execution fast
-        if apk_info['size_mb'] > 350:
-            print(f"⚠️ Skipping {meta['title']}: File size ({apk_info['size_mb']} MB) exceeds 350 MB threshold for fast batch posting.")
-            continue
-
-        # File size check (only applies if DevUploads is NOT used and no local bot API)
-        if not DEVUPLOADS_API_KEY and apk_info['size_mb'] > MAX_BOT_API_SIZE_MB and not LOCAL_BOT_API_URL:
-            print(f"⚠️ Skipping {meta['title']}: File size ({apk_info['size_mb']} MB) exceeds standard Bot API limit (50 MB).")
-            sent_set.add(url)
-            sent_set.add(version_key)
+        # File size safeguard: DevUploads provides unlimited cloud storage.
+        # Allow large games/apps (up to 3000 MB / 3 GB) when DevUploads is configured.
+        max_allowed_mb = int(os.getenv("MAX_UPLOAD_SIZE_MB", "3000")) if DEVUPLOADS_API_KEY else MAX_BOT_API_SIZE_MB
+        if apk_info['size_mb'] > max_allowed_mb:
+            print(f"⚠️ Skipping {meta['title']}: File size ({apk_info['size_mb']} MB) exceeds {max_allowed_mb} MB threshold.")
+            if not DEVUPLOADS_API_KEY and not LOCAL_BOT_API_URL:
+                sent_set.add(url)
+                sent_set.add(version_key)
             continue
 
         success = False
