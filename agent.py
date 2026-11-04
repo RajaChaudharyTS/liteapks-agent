@@ -90,6 +90,60 @@ def clean_text_for_telegram(text):
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
+# Permanent List of all 50 Official LiteAPKs Categories (Apps & Games)
+ALL_BUILTIN_CATEGORIES = [
+    ("Art & Design", "https://liteapks.com/apps/art-design"),
+    ("Auto & Vehicles", "https://liteapks.com/apps/auto-vehicles"),
+    ("Beauty", "https://liteapks.com/apps/beauty"),
+    ("Books & Reference", "https://liteapks.com/apps/books-reference"),
+    ("Business", "https://liteapks.com/apps/business"),
+    ("Comics", "https://liteapks.com/apps/comics"),
+    ("Communication", "https://liteapks.com/apps/communication"),
+    ("Dating", "https://liteapks.com/apps/dating"),
+    ("Education", "https://liteapks.com/apps/education"),
+    ("Emulator", "https://liteapks.com/apps/emulator"),
+    ("Entertainment", "https://liteapks.com/apps/entertainment"),
+    ("Events", "https://liteapks.com/apps/events"),
+    ("Finance", "https://liteapks.com/apps/finance"),
+    ("Food & Drink", "https://liteapks.com/apps/food-drink"),
+    ("Health & Fitness", "https://liteapks.com/apps/health-fitness"),
+    ("House & Home", "https://liteapks.com/apps/house-home"),
+    ("Libraries & Demo", "https://liteapks.com/apps/libraries-demo"),
+    ("Lifestyle", "https://liteapks.com/apps/lifestyle"),
+    ("Maps & Navigation", "https://liteapks.com/apps/maps-navigation"),
+    ("Medical", "https://liteapks.com/apps/medical"),
+    ("Music & Audio", "https://liteapks.com/apps/music-audio"),
+    ("News & Magazines", "https://liteapks.com/apps/news-magazines"),
+    ("Parenting", "https://liteapks.com/apps/parenting"),
+    ("Personalization", "https://liteapks.com/apps/personalization"),
+    ("Photography", "https://liteapks.com/apps/photography"),
+    ("Productivity", "https://liteapks.com/apps/productivity"),
+    ("Shopping", "https://liteapks.com/apps/shopping"),
+    ("Social", "https://liteapks.com/apps/social"),
+    ("Sports", "https://liteapks.com/apps/sport"),
+    ("Tools", "https://liteapks.com/apps/tools"),
+    ("Travel & Local", "https://liteapks.com/apps/travel-local"),
+    ("Video Players & Editors", "https://liteapks.com/apps/video-players-editors"),
+    ("Weather", "https://liteapks.com/apps/weather"),
+    ("Action Games", "https://liteapks.com/games/action"),
+    ("Adventure Games", "https://liteapks.com/games/adventure"),
+    ("Arcade Games", "https://liteapks.com/games/arcade"),
+    ("Board Games", "https://liteapks.com/games/board"),
+    ("Card Games", "https://liteapks.com/games/card"),
+    ("Casino Games", "https://liteapks.com/games/casino"),
+    ("Casual Games", "https://liteapks.com/games/casual"),
+    ("Educational Games", "https://liteapks.com/games/educational"),
+    ("Music Games", "https://liteapks.com/games/music"),
+    ("Puzzle Games", "https://liteapks.com/games/puzzle"),
+    ("Racing Games", "https://liteapks.com/games/racing"),
+    ("Role Playing Games", "https://liteapks.com/games/role-playing"),
+    ("Simulation Games", "https://liteapks.com/games/simulation"),
+    ("Sports Games", "https://liteapks.com/games/sports"),
+    ("Strategy Games", "https://liteapks.com/games/strategy"),
+    ("Trivia Games", "https://liteapks.com/games/trivia"),
+    ("Word Games", "https://liteapks.com/games/word")
+]
+
 def scrape_latest_apk_links():
     """Scrapes LiteAPKs with strict Priority per user requirements:
     1. Tier 1 (First Priority):
@@ -97,14 +151,14 @@ def scrape_latest_apk_links():
        - Main 'Top Games' from /games (e.g. Roblox, 8 Ball Pool, Shadow Fight 2, Subway Surfers)
        - Homepage 'Indispensable on your phone' & 'Must have collection'
     2. Tier 2 (Second Priority):
-       - Category-wise Top Apps & Games: Dynamically scrapes ALL 55 subcategories under /apps and /games:
+       - Category-wise Top Apps & Games: Scrapes ALL 50 subcategories under /apps and /games:
          (Art & Design, Auto & Vehicles, Beauty, Books & Reference, Business, Comics, Communication,
           Education, Entertainment, Finance, Food & Drink, Health & Fitness, House & Home, Lifestyle,
           Maps & Navigation, Music & Audio, News & Magazines, Personalization, Photography, Productivity,
           Social, Tools, Travel & Local, Video Players & Editors, Weather, and all Game genres).
          Fetches top 3 highest ranked apps/games from EACH category in parallel.
     3. Tier 3 (Third Priority - All Remaining Apps & Games):
-       - All remaining apps and games from every category (apps after top 3 in all 55 categories).
+       - All remaining apps and games from every category (apps after top 3 in all categories).
        - Deep catalog pagination for both /apps (pages 2 to 5) and /games (pages 2 to 5).
        - Ensures all remaining unposted apps and games are continuously posted!
     """
@@ -127,26 +181,22 @@ def scrape_latest_apk_links():
         except Exception as e:
             print(f"[Tier 1 Scraper Error] {root_url}: {e}")
 
-    # 2. Tier 2 & 3: Discover ALL Subcategories across /apps and /games
-    all_categories = []
-    seen_cat_urls = set()
+    # 2. Tier 2 & 3: Built-in + Dynamically Discovered Categories across /apps and /games
+    all_categories = list(ALL_BUILTIN_CATEGORIES)
+    seen_cat_urls = {u for _, u in all_categories}
     for hub_url in [f"{SOURCE_BASE_URL}/apps", f"{SOURCE_BASE_URL}/games"]:
         try:
-            r_hub = requests.get(hub_url, headers=HEADERS, timeout=10)
+            r_hub = requests.get(hub_url, headers=HEADERS, timeout=8)
             if r_hub.status_code == 200:
                 html = r_hub.text
-                idx = html.find('cat-filter-wrap')
-                if idx != -1:
-                    end_idx = html.find('</div>', idx)
-                    wrap_html = html[idx:end_idx]
-                    cat_links = re.findall(r'href=[\"\'](https://liteapks\.com/(?:apps|games)/[a-zA-Z0-9\-_]+)[\"\'][^>]*>\s*([^<]+)\s*</a>', wrap_html)
-                    for l, t in cat_links:
-                        t_clean = t.replace('&amp;', '&').strip()
-                        if l not in seen_cat_urls and not l.endswith('/apps') and not l.endswith('/games') and not is_banned_app(t_clean, l):
-                            seen_cat_urls.add(l)
-                            all_categories.append((t_clean, l))
-        except Exception as e:
-            print(f"[Tier 2 Category Discovery Error] {hub_url}: {e}")
+                cat_links = re.findall(r'href=[\"\'](https://liteapks\.com/(?:apps|games)/[a-zA-Z0-9\-_]+)[\"\']', html)
+                for l in cat_links:
+                    if l not in seen_cat_urls and not l.endswith('/apps') and not l.endswith('/games') and '/page/' not in l and not is_banned_app("", l):
+                        seen_cat_urls.add(l)
+                        clean_name = l.rstrip('/').split('/')[-1].replace('-', ' ').title()
+                        all_categories.append((clean_name, l))
+        except Exception:
+            pass
 
     def fetch_category_apps(cat_item):
         cat_name, cat_url = cat_item
@@ -162,7 +212,7 @@ def scrape_latest_apk_links():
         return cat_name, [], []
 
     if all_categories:
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=12) as executor:
             cat_results = list(executor.map(fetch_category_apps, all_categories))
         for cat_name, top_3, rest in cat_results:
             for a in top_3:
