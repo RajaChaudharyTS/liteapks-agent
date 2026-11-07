@@ -148,6 +148,18 @@ def answer_callback(cb_id, text=None, show_alert=False):
         payload['text'] = text
     return send_tg('answerCallbackQuery', payload)
 
+def edit_msg(chat_id, message_id, text, reply_markup=None):
+    payload = {
+        'chat_id': chat_id,
+        'message_id': message_id,
+        'text': text,
+        'parse_mode': 'HTML',
+        'disable_web_page_preview': 'true'
+    }
+    if reply_markup:
+        payload['reply_markup'] = json.dumps(reply_markup)
+    return send_tg('editMessageText', payload)
+
 # ==============================================================================
 # 🔒 CHANNEL MEMBERSHIP VERIFIER
 # ==============================================================================
@@ -200,6 +212,8 @@ def get_user_state(user_id):
         return user
 
 def verify_user_request_eligibility(user_id):
+    if str(user_id) == str(ADMIN_CHAT_ID):
+        return "ALLOWED", "admin_unlimited", None
     """
     Evaluates strict multi-tier progression:
     Day 1:
@@ -310,7 +324,7 @@ def handle_incoming_file(msg, from_user):
     if doc:
         file_type = 'document'
         file_id = doc.get('file_id')
-        file_name = doc.get('file_name', 'Document')
+        file_name = doc.get('file_name', 'Document.bin')
         file_size = doc.get('file_size', 0)
     elif vid:
         file_type = 'video'
@@ -338,6 +352,94 @@ def handle_incoming_file(msg, from_user):
     size_mb = round(file_size / (1024 * 1024), 2)
     file_code = secrets.token_urlsafe(6)
 
+    # Fast initial acknowledgement
+    status_msg = send_msg(
+        chat_id,
+        f"⏳ <b>Receiving '{html.escape(file_name)}' ({size_mb} MB)...</b>\n\n"
+        f"☁️ <i>Uploading to DevUploads high-speed cloud server...</i>\n"
+        f"⚡ <i>Please wait a few seconds...</i>"
+    )
+    status_msg_id = status_msg.get('result', {}).get('message_id') if status_msg else None
+
+    # Asynchronous worker to download and upload to DevUploads
+    threading.Thread(
+        target=_process_file_upload_to_devuploads,
+        args=(chat_id, status_msg_id, msg, from_user, file_id, file_type, file_name, file_size, size_mb, file_code, caption),
+        daemon=True
+    ).start()
+
+
+def _process_file_upload_to_devuploads(chat_id, status_msg_id, msg, from_user, file_id, file_type, file_name, file_size, size_mb, file_code, caption):
+    temp_dir = os.path.join(CURRENT_DIR, "agent_temp")
+    os.makedirs(temp_dir, exist_ok=True)
+    clean_name = re.sub(r'[^a-zA-Z0-9._-]', '_', file_name) or "file.bin"
+    temp_path = os.path.join(temp_dir, f"dl_{file_code}_{clean_name}")
+
+    devuploads_url = None
+    try:
+        downloaded = False
+        # 1. If <= 20MB, download directly via Bot API getFile
+        if file_size <= 20 * 1024 * 1024:
+            f_info = send_tg('getFile', {'file_id': file_id})
+            if f_info.get('ok') and 'file_path' in f_info.get('result', {}):
+                tg_path = f_info['result']['file_path']
+                dl_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{tg_path}"
+                with requests.get(dl_url, stream=True, timeout=60) as resp:
+                    if resp.status_code == 200:
+                        with open(temp_path, 'wb') as f:
+                            for chunk in resp.iter_content(chunk_size=65536):
+                                f.write(chunk)
+                        downloaded = True
+
+        # 2. If > 20MB or Bot API failed, use Telethon bridge
+        if not downloaded:
+            try:
+                BRIDGE_CHANNEL_ID = -1004298116253
+                fwd = send_tg('forwardMessage', {
+                    'chat_id': BRIDGE_CHANNEL_ID,
+                    'from_chat_id': chat_id,
+                    'message_id': msg.get('message_id')
+                })
+                if fwd.get('ok'):
+                    br_msg_id = fwd['result']['message_id']
+                    from telethon import TelegramClient
+                    import config
+                    SESSION_NAME = os.path.join(CURRENT_DIR, 'user_uploader')
+                    
+                    async def _telethon_dl():
+                        client = TelegramClient(SESSION_NAME, config.TG_API_ID, config.TG_API_HASH)
+                        await client.connect()
+                        ch = await client.get_entity(BRIDGE_CHANNEL_ID)
+                        msgs = await client.get_messages(ch, ids=[br_msg_id])
+                        if msgs and msgs[0].media:
+                            await client.download_media(msgs[0].media, file=temp_path)
+                            await client.delete_messages(ch, [br_msg_id])
+                        await client.disconnect()
+
+                    import asyncio
+                    asyncio.run(_telethon_dl())
+                    if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+                        downloaded = True
+            except Exception as te:
+                print(f"[Telethon DL Bridge Warning]: {te}")
+
+        # 3. Upload to DevUploads via battle-tested API
+        if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+            devuploads_url = agent.upload_to_devuploads(temp_path, clean_name)
+            print(f"[DevUploads Upload Success]: {clean_name} -> {devuploads_url}")
+        else:
+            print(f"[File Download Failed]: Could not fetch {clean_name} to disk.")
+
+    except Exception as e:
+        print(f"[File Upload Exception]: {e}")
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+    share_link = f"https://t.me/{BOT_USERNAME}?start=file_{file_code}"
     with db_lock:
         store = load_files()
         store[file_code] = {
@@ -345,6 +447,7 @@ def handle_incoming_file(msg, from_user):
             'file_type': file_type,
             'file_name': file_name,
             'file_size_mb': size_mb,
+            'devuploads_url': devuploads_url or '',
             'caption': caption,
             'uploader_id': from_user.get('id'),
             'uploader_name': from_user.get('first_name', ''),
@@ -353,25 +456,52 @@ def handle_incoming_file(msg, from_user):
         }
         save_files(store)
 
-    share_link = f"https://t.me/{BOT_USERNAME}?start=file_{file_code}"
-    card_text = (
-        f"✅ <b>File Stored in High-Speed Cloud Storage!</b> ☁️⚡\n\n"
-        f"📁 <b>Filename:</b> <code>{html.escape(file_name)}</code>\n"
-        f"💾 <b>Size:</b> <b>{size_mb} MB</b>\n"
-        f"⚡ <b>Delivery:</b> Instant Telegram Cloud CDN\n\n"
-        f"🔗 <b>Your Permanent Shareable Link:</b>\n"
-        f"👉 <code>{share_link}</code>\n\n"
-        f"💡 <i>Share this link anywhere! Anyone who clicks can download this file instantly.</i>"
-    )
     encoded_name = urllib.parse.quote(file_name)
     share_button_url = f"https://t.me/share/url?url={share_link}&text=Download%20{encoded_name}%20via%20GETMOD%20Cloud"
-    keyboard = {
-        'inline_keyboard': [
-            [{'text': '📤 Share Link with Friends', 'url': share_button_url}],
-            [{'text': f'📢 Join Channel {CHANNEL_GETMOD_HANDLE}', 'url': f'https://t.me/{CHANNEL_GETMOD_HANDLE.lstrip("@")}'}]
-        ]
-    }
-    send_msg(chat_id, card_text, keyboard)
+
+    if devuploads_url and str(devuploads_url).startswith("https://devuploads.com/"):
+        card_text = (
+            f"✅ <b>File Uploaded to DevUploads Cloud!</b> ☁️⚡\n\n"
+            f"📁 <b>Filename:</b> <code>{html.escape(file_name)}</code>\n"
+            f"💾 <b>Size:</b> <b>{size_mb} MB</b>\n"
+            f"⚡ <b>Delivery:</b> High-Speed Cloud CDN\n\n"
+            f"🚀 <b>High-Speed DevUploads Download Link:</b>\n"
+            f"👉 <b>{devuploads_url}</b>\n\n"
+            f"🔗 <b>Permanent Telegram Cloud Link:</b>\n"
+            f"👉 <code>{share_link}</code>\n\n"
+            f"💡 <i>Share this high-speed link with anyone worldwide!</i>"
+        )
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '🚀 Fast Download Link (DevUploads)', 'url': devuploads_url}],
+                [{'text': '📤 Share Link with Friends', 'url': share_button_url}],
+                [{'text': f'📢 Join Channel {CHANNEL_GETMOD_HANDLE}', 'url': f'https://t.me/{CHANNEL_GETMOD_HANDLE.lstrip("@")}'}]
+            ]
+        }
+    else:
+        card_text = (
+            f"✅ <b>File Stored in High-Speed Cloud Storage!</b> ☁️⚡\n\n"
+            f"📁 <b>Filename:</b> <code>{html.escape(file_name)}</code>\n"
+            f"💾 <b>Size:</b> <b>{size_mb} MB</b>\n"
+            f"⚡ <b>Delivery:</b> Instant Telegram Cloud CDN\n\n"
+            f"🔗 <b>Your Permanent Shareable Link:</b>\n"
+            f"👉 <code>{share_link}</code>\n\n"
+            f"💡 <i>Share this link anywhere! Anyone who clicks can download this file instantly.</i>"
+        )
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '📤 Share Link with Friends', 'url': share_button_url}],
+                [{'text': f'📢 Join Channel {CHANNEL_GETMOD_HANDLE}', 'url': f'https://t.me/{CHANNEL_GETMOD_HANDLE.lstrip("@")}'}]
+            ]
+        }
+
+    if status_msg_id:
+        try:
+            edit_msg(chat_id, status_msg_id, card_text, keyboard)
+        except Exception:
+            send_msg(chat_id, card_text, keyboard)
+    else:
+        send_msg(chat_id, card_text, keyboard)
 
 def handle_shared_file_delivery(chat_id, user_id, file_code):
     with db_lock:
@@ -1209,6 +1339,36 @@ def main_poll_loop():
                         ]
                     }
                     send_msg(chat_id, ch_msg, kb)
+
+                elif text.startswith('/demand') or text.startswith('/request'):
+                    parts = text.split(maxsplit=1)
+                    if len(parts) > 1 and parts[1].strip():
+                        app_q = parts[1].strip()
+                        first_name = from_user.get('first_name', '').strip()
+                        last_name = from_user.get('last_name', '').strip()
+                        u_name = f"{first_name} {last_name}".strip() or first_name or "Community Member"
+                        handle_app_search_request(chat_id, user_id, app_q, user_name=u_name)
+                    else:
+                        send_msg(
+                            chat_id,
+                            "👇 <b>Type and send the name of any Android app or game you want:</b>\n\n"
+                            "(e.g., <code>Netflix</code>, <code>Spotify</code>, <code>CapCut</code>, <code>KineMaster</code>)\n\n"
+                            "<i>Or send:</i> <code>/demand &lt;app_name&gt;</code>"
+                        )
+
+                elif text in ['/help', '❓ Help']:
+                    send_msg(chat_id, (
+                        "💡 <b>How to Use File Sharing & App Wishlist Bot:</b>\n\n"
+                        "📱 <b>1. Request / Search Modded Apps:</b>\n"
+                        "• Simply type and send the app name (e.g., <code>Netflix</code>, <code>Spotify</code>) or use <code>/demand &lt;app_name&gt;</code>.\n"
+                        "• If found in database or websites, tap <b>'Yes, Download Now'</b> to get the direct high-speed DevUploads link!\n\n"
+                        "📁 <b>2. Upload & Share Files (DevUploads):</b>\n"
+                        "• Directly send any APK, document, video, or photo to this chat.\n"
+                        "• The bot will instantly upload it to <b>DevUploads</b> and give you the high-speed download link!\n\n"
+                        f"📢 <b>Official Channels:</b>\n"
+                        f"• {CHANNEL_GETMOD_HANDLE} (Daily Modded Apps)\n"
+                        f"• {CHANNEL_DEALS_HANDLE} (Daily Loot Deals)"
+                    ))
 
                 elif text in ['🔍 Search Modded App', '📁 Share a File']:
                     if text == '🔍 Search Modded App':
