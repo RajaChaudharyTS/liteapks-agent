@@ -20,6 +20,32 @@ if hasattr(sys.stdout, 'reconfigure'):
         pass
 
 from verifier import AppSelectionVerifierSubagent
+import androforever_scraper
+
+SOURCE_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "source_state.json")
+
+def get_current_source():
+    """Determines alternating source: 'liteapks' or 'androforever'."""
+    try:
+        if os.path.exists(SOURCE_STATE_FILE):
+            with open(SOURCE_STATE_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                last_source = data.get('last_source', 'androforever').lower()
+                return 'androforever' if last_source == 'liteapks' else 'liteapks'
+    except Exception as e:
+        print(f"[Source State Read Warning]: {e}")
+    return 'liteapks'
+
+def save_source_state(source_used):
+    """Saves the last used source to alternate next time."""
+    try:
+        with open(SOURCE_STATE_FILE, 'w', encoding='utf-8') as f:
+            json.dump({
+                'last_source': source_used.lower(),
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+            }, f, indent=2)
+    except Exception as e:
+        print(f"[Source State Write Warning]: {e}")
 from config import (
     BOT_TOKEN,
     CHANNEL_ID,
@@ -1026,6 +1052,89 @@ def get_selected_batch(target_count=MAX_APKS_PER_RUN):
     tier1, cat_p1, cat_p2, deep_catalog = scrape_prioritized_candidates()
     return select_10_app_batch(tier1, cat_p1, cat_p2, deep_catalog, sent_set, target_count=target_count)
 
+def select_androforever_10_app_batch(popular_candidates, category_candidates, sent_set, target_count=MAX_APKS_PER_RUN, verifier=None):
+    """
+    Selects up to target_count apps from AndroForever following strict priority:
+    1. Priority 1: Popular / Trending apps first.
+    2. Priority 2 & 3: Category / Non-Popular apps (Tools, Video, Music, Personalization, etc.).
+    Smart Skip: If popular apps have already been posted or have no update, seamlessly skips them and fills the batch from Category apps!
+    """
+    if verifier is None:
+        catalog = load_apps_catalog()
+        verifier = AppSelectionVerifierSubagent(sent_set=sent_set, catalog=catalog, live_sync=True)
+
+    selected_batch = []
+    discarded_count = 0
+    print(f"\n🤖 [ANDROFOREVER SELECTION INITIATED]: Verifying candidates against database & live channel history (Target: {target_count})...")
+
+    # Phase 1: Popular Candidates
+    for item in popular_candidates:
+        if len(selected_batch) >= target_count:
+            break
+        u = item['url']
+        c_slug = verifier.get_canonical_slug(u)
+        if is_banned_app("", u) or c_slug in verifier.batch_slugs:
+            continue
+
+        meta = androforever_scraper.extract_androforever_metadata(u)
+        if not meta:
+            continue
+
+        decision, reason, prev_v = verifier.verify_candidate(item, meta)
+        if decision == 'REJECT':
+            discarded_count += 1
+            print(f"⏩ [SMART SKIP - POPULAR]: {meta['title']} (v{meta.get('version', '')}) -> {reason}")
+            continue
+
+        verifier.lock_batch_candidate(item, meta)
+        selected_batch.append({
+            'url': u,
+            'title': meta['title'],
+            'version': meta.get('version', 'Latest'),
+            'category': meta.get('app_type', 'App'),
+            'priority_label': item.get('priority_label', 'Priority 1 - Popular'),
+            'is_update': reason.startswith('GENUINE_NEW_UPDATE'),
+            'prev_version': prev_v,
+            'source': 'androforever',
+            'meta': meta
+        })
+
+    # Phase 2: Category / Non-Popular Candidates (if fewer than target_count)
+    if len(selected_batch) < target_count:
+        print(f"ℹ️ [FILLING FROM CATEGORIES]: {len(selected_batch)}/{target_count} selected from Popular. Advancing to Non-Popular Category apps...")
+        for item in category_candidates:
+            if len(selected_batch) >= target_count:
+                break
+            u = item['url']
+            c_slug = verifier.get_canonical_slug(u)
+            if is_banned_app("", u) or c_slug in verifier.batch_slugs:
+                continue
+
+            meta = androforever_scraper.extract_androforever_metadata(u)
+            if not meta:
+                continue
+
+            decision, reason, prev_v = verifier.verify_candidate(item, meta)
+            if decision == 'REJECT':
+                discarded_count += 1
+                continue
+
+            verifier.lock_batch_candidate(item, meta)
+            selected_batch.append({
+                'url': u,
+                'title': meta['title'],
+                'version': meta.get('version', 'Latest'),
+                'category': meta.get('app_type', 'App'),
+                'priority_label': item.get('priority_label', 'Priority 2 - Category'),
+                'is_update': reason.startswith('GENUINE_NEW_UPDATE'),
+                'prev_version': prev_v,
+                'source': 'androforever',
+                'meta': meta
+            })
+
+    print(f"🤖 [ANDROFOREVER SELECTION COMPLETE]: {len(selected_batch)} valid candidates locked. Discarded duplicates: {discarded_count}.\n")
+    return selected_batch
+
 def format_batch_summary(selected_batch):
     """Formats the selected 10-app batch into a clean, structured report grouped by Category & Priority."""
     if not selected_batch:
@@ -1698,14 +1807,6 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False, stat
             send_admin_alert(dev_err_text)
             return False
 
-        # FREE DISK STORAGE: Purge local APK IMMEDIATELY once DevUploads link is obtained!
-        if os.path.exists(apk_path):
-            try:
-                os.remove(apk_path)
-                print(f"[Immediate Cleanup] Deleted local APK: {clean_file_name}", flush=True)
-            except Exception:
-                pass
-
         if status_callback:
             try:
                 status_callback('app_link_ready', {
@@ -1769,40 +1870,71 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False, stat
 
         caption = f"{header_part}📖 <b>Description:</b>\n{html.escape(clean_desc)}\n\n{footer_part}\n"
         posted_success = False
+
+        # =========================================================================
+        # MESSAGE 1: Photo Banner with ONLY clean app name (without .apk)
+        # =========================================================================
+        photo_title_text = re.sub(r'(?i)\.apk$', '', clean_file_name)
+        photo_caption = f"<b>{html.escape(photo_title_text)}</b>"
+        photo_sent = False
+
         if os.path.exists(img_path):
             try:
                 with open(img_path, 'rb') as f_img:
                     r_photo = requests.post(
                         f"{api_base}/sendPhoto",
-                        data={'chat_id': chat, 'caption': caption, 'parse_mode': 'HTML'},
+                        data={'chat_id': chat, 'caption': photo_caption, 'parse_mode': 'HTML'},
                         files={'photo': f_img},
                         timeout=60
                     )
-                    res_json = r_photo.json()
-                    if res_json.get('ok'):
-                        print(f"Successfully posted {meta['title']} (DevUploads link) to Telegram ({chat})!")
+                    res_p = r_photo.json()
+                    if res_p.get('ok'):
+                        photo_sent = True
+                        print(f"✅ [Photo Banner Sent]: {photo_title_text} (Msg ID: {res_p['result']['message_id']})")
+                    else:
+                        print(f"[Photo File Send Error]: {res_p}")
+            except Exception as pe:
+                print(f"[Photo File Exception]: {pe}")
+
+        if not photo_sent and meta.get('image_url'):
+            try:
+                r_p_url = requests.post(
+                    f"{api_base}/sendPhoto",
+                    data={'chat_id': chat, 'caption': photo_caption, 'parse_mode': 'HTML', 'photo': meta['image_url']},
+                    timeout=35
+                )
+                if r_p_url.json().get('ok'):
+                    photo_sent = True
+                    print(f"✅ [Photo URL Sent]: {photo_title_text}")
+            except Exception as pue:
+                print(f"[Photo URL Error]: {pue}")
+
+        # =========================================================================
+        # MESSAGE 2: Raw APK Document (<= 49.5 MB) OR Rich Message (> 49.5 MB)
+        # =========================================================================
+        if apk_info.get('size_mb', 0) <= 49.5 and os.path.exists(apk_path):
+            try:
+                print(f"📤 [Uploading Raw Document]: {clean_file_name} ({apk_info['size_mb']} MB) to Telegram...")
+                with open(apk_path, 'rb') as f_doc:
+                    files = {
+                        'document': (clean_file_name, f_doc, 'application/vnd.android.package-archive')
+                    }
+                    data = {
+                        'chat_id': chat,
+                        'caption': caption,
+                        'parse_mode': 'HTML'
+                    }
+                    r_doc = requests.post(f"{api_base}/sendDocument", data=data, files=files, timeout=300)
+                    res_doc = r_doc.json()
+                    if res_doc.get('ok'):
+                        print(f"✅ [Raw APK Document Sent]: {clean_file_name} (Msg ID: {res_doc['result']['message_id']})")
                         posted_success = True
                     else:
-                        print(f"Telegram sendPhoto (file) Error: {res_json}")
-            except Exception as e:
-                print(f"[Send Photo File Exception]: {e}")
+                        print(f"[sendDocument Error]: {res_doc}")
+            except Exception as de:
+                print(f"[sendDocument Exception]: {de}")
 
-            if not posted_success and meta.get('image_url'):
-                try:
-                    r_url = requests.post(
-                        f"{api_base}/sendPhoto",
-                        data={'chat_id': chat, 'caption': caption, 'parse_mode': 'HTML', 'photo': meta['image_url']},
-                        timeout=35
-                    )
-                    res_url_json = r_url.json()
-                    if res_url_json.get('ok'):
-                        print(f"Successfully posted {meta['title']} (photo URL fallback) to Telegram ({chat})!")
-                        posted_success = True
-                    else:
-                        print(f"Telegram sendPhoto (URL) Error: {res_url_json}")
-                except Exception as e:
-                    print(f"[Send Photo URL Error]: {e}")
-
+        # Fallback if document upload failed or file size > 49.5 MB
         if not posted_success:
             try:
                 r_msg = requests.post(
@@ -1811,12 +1943,20 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False, stat
                     timeout=35
                 )
                 if r_msg.json().get('ok'):
-                    print(f"Successfully posted {meta['title']} (text fallback) to Telegram ({chat})!")
+                    print(f"✅ Successfully posted {meta['title']} (message fallback) to Telegram ({chat})!")
                     posted_success = True
                 else:
                     print(f"Telegram sendMessage Error: {r_msg.json()}")
-            except Exception as e:
-                print(f"[Send Message Error]: {e}")
+            except Exception as me:
+                print(f"[Send Message Error]: {me}")
+
+        # FREE DISK STORAGE: Purge local APK immediately after Telegram posting
+        if os.path.exists(apk_path):
+            try:
+                os.remove(apk_path)
+                print(f"[Immediate Cleanup] Deleted local APK: {clean_file_name}", flush=True)
+            except Exception:
+                pass
 
         if not posted_success:
             send_admin_alert(f"⚠️ <b>Telegram Broadcast Failed</b>\nApp: {meta['title']} (v{meta['version']})\nTarget: {chat}\nCheck bot admin permissions in channel.")
@@ -1974,22 +2114,45 @@ def post_single_custom_app(app_name, target_version=None, status_callback=None, 
     else:
         return {'success': False, 'error': f"DevUploads upload failed for {meta['title']}."}
 
-def run_pipeline(demo_target=None, status_callback=None):
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting LiteAPKs Autonomous Pipeline...")
+def run_pipeline(demo_target=None, status_callback=None, force_source=None):
     cleanup_storage()
     sent_set = load_sent_history()
     catalog = load_apps_catalog()
     verifier = AppSelectionVerifierSubagent(sent_set=sent_set, catalog=catalog, live_sync=True)
-    print(f"Database contains {len(sent_set)} entries ({len(registry['by_slug'])} unique apps tracked).")
 
-    if status_callback:
-        try:
-            status_callback('scraping', {'status': 'Scanning LiteAPKs for Priority 1, 2, and 3 candidate apps...'})
-        except Exception:
-            pass
+    # Alternate Round-Robin Source Selection (10 LiteAPKs 🔄 10 AndroForever)
+    active_source = (force_source or get_current_source()).lower()
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 🔄 Starting Autonomous Pipeline [SOURCE: {active_source.upper()}]...")
+    print(f"Database contains {len(sent_set)} entries tracked.")
 
-    tier1, cat_p1, cat_p2, deep_catalog = scrape_prioritized_candidates()
-    selected_batch = select_10_app_batch(tier1, cat_p1, cat_p2, deep_catalog, sent_set, target_count=MAX_APKS_PER_RUN, verifier=verifier)
+    if active_source == 'androforever':
+        if status_callback:
+            try:
+                status_callback('scraping', {'status': 'Scanning AndroForever for Popular and Category apps...'})
+            except Exception:
+                pass
+
+        pop_candidates, cat_candidates = androforever_scraper.scrape_androforever_prioritized_candidates()
+        selected_batch = select_androforever_10_app_batch(pop_candidates, cat_candidates, sent_set, target_count=MAX_APKS_PER_RUN, verifier=verifier)
+        fallback_candidates = [item for item in (pop_candidates + cat_candidates) if item['url'] not in {x['url'] for x in selected_batch}]
+        fallback_stream = (
+            item for item in fallback_candidates
+            if verifier.get_canonical_slug(item['url']) not in verifier.batch_slugs
+        )
+    else:
+        if status_callback:
+            try:
+                status_callback('scraping', {'status': 'Scanning LiteAPKs for Priority 1, 2, and 3 candidate apps...'})
+            except Exception:
+                pass
+
+        tier1, cat_p1, cat_p2, deep_catalog = scrape_prioritized_candidates()
+        selected_batch = select_10_app_batch(tier1, cat_p1, cat_p2, deep_catalog, sent_set, target_count=MAX_APKS_PER_RUN, verifier=verifier)
+        selected_urls = {item['url'] for item in selected_batch}
+        fallback_stream = (
+            item for item in generate_prioritized_candidates(tier1, cat_p1, cat_p2, deep_catalog)
+            if item['url'] not in selected_urls and verifier.get_canonical_slug(item['url']) not in verifier.batch_slugs
+        )
 
     summary_text = format_batch_summary(selected_batch)
     print(summary_text)
@@ -1997,7 +2160,7 @@ def run_pipeline(demo_target=None, status_callback=None):
     if status_callback:
         try:
             status_callback('start', {
-                'discovered': len(tier1) + sum(len(a) for _, a in cat_p1) + sum(len(a) for _, a in cat_p2),
+                'source': active_source,
                 'selected': len(selected_batch),
                 'target_max': MAX_APKS_PER_RUN,
                 'batch': selected_batch
@@ -2006,7 +2169,9 @@ def run_pipeline(demo_target=None, status_callback=None):
             pass
 
     if not selected_batch:
-        print("ℹ️ No unposted candidate APKs found. Database is up to date.")
+        print(f"ℹ️ No unposted candidate APKs found for {active_source.upper()}. Database is up to date.")
+        # Automatically toggle source so next run checks the other website
+        save_source_state(active_source)
         if status_callback:
             try:
                 status_callback('done', {'processed': 0, 'total_db': len(sent_set), 'completed_apps': []})
@@ -2018,12 +2183,6 @@ def run_pipeline(demo_target=None, status_callback=None):
     processed_slugs = set()
     completed_apps = []
 
-    # Prioritize pre-selected validated batch; cascade fallback candidates if any candidate fails
-    selected_urls = {item['url'] for item in selected_batch}
-    fallback_stream = (
-        item for item in generate_prioritized_candidates(tier1, cat_p1, cat_p2, deep_catalog)
-        if item['url'] not in selected_urls and verifier.get_canonical_slug(item['url']) not in verifier.batch_slugs
-    )
     from itertools import chain
     candidate_stream = chain(selected_batch, fallback_stream)
 
@@ -2036,13 +2195,16 @@ def run_pipeline(demo_target=None, status_callback=None):
         item_label = item.get('priority_label', item_cat)
         c_slug = verifier.get_canonical_slug(url)
 
-        if c_slug in processed_slugs:
+        if c_slug in processed_slugs or is_banned_app("", url):
             continue
 
-        if is_banned_app("", url):
-            continue
+        item_source = item.get('source', active_source)
 
-        meta = item.get('meta') or extract_app_metadata(url)
+        if item_source == 'androforever':
+            meta = item.get('meta') or androforever_scraper.extract_androforever_metadata(url)
+        else:
+            meta = item.get('meta') or extract_app_metadata(url)
+
         if not meta:
             continue
 
@@ -2071,7 +2233,10 @@ def run_pipeline(demo_target=None, status_callback=None):
         else:
             print(f"\nProcessing [{item_label}]: {meta['title']} ({url})")
 
-        apk_info = resolve_direct_apk_url(meta['download_page'])
+        if item_source == 'androforever':
+            apk_info = androforever_scraper.resolve_androforever_apk_url(meta['download_page'], meta['title'], meta['version'])
+        else:
+            apk_info = resolve_direct_apk_url(meta['download_page'])
         if not apk_info:
             print(f"Could not resolve direct APK URL for {meta['title']}. Skipping.")
             continue
@@ -2155,6 +2320,8 @@ def run_pipeline(demo_target=None, status_callback=None):
             time.sleep(3)
 
         cleanup_storage()
+    save_source_state(active_source)
+    print(f"\n🔄 [SOURCE STATE SAVED]: Completed run for {active_source.upper()}. Next run will alternate to {'ANDROFOREVER' if active_source == 'liteapks' else 'LITEAPKS'}.")
     print(f"\nPipeline Run Completed. Broadcasted {processed_count} new/updated APKs.")
 
     # Automated GitHub Step Summary Report
