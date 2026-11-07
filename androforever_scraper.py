@@ -317,7 +317,7 @@ def extract_androforever_metadata(app_url):
         return None
 
 
-def resolve_androforever_apk_url(download_page_url, title="App", version="Latest"):
+def resolve_androforever_apk_url(download_page_url, title="App", version="Latest", max_size_mb=49.0):
     """
     Resolves the direct .apk URL from the download page (cloud.androforever.com / CloudFront / CDN).
     Follows redirects to obtain the final direct .apk binary URL.
@@ -354,9 +354,9 @@ def resolve_androforever_apk_url(download_page_url, title="App", version="Latest
         except Exception:
             pass
 
-        # Early size guard: If APK is larger than 49.0 MB, it cannot be sent as Telegram document
-        if size_mb > 49.0:
-            print(f"⏩ [AndroForever Size Guard]: {title} ({size_mb} MB) exceeds Telegram 49.0 MB document limit. Skipping cleanly.")
+        # Early size guard: If APK is larger than max_size_mb threshold, skip cleanly
+        if max_size_mb and size_mb > max_size_mb:
+            print(f"⏩ [AndroForever Size Guard]: {title} ({size_mb} MB) exceeds {max_size_mb} MB threshold. Skipping cleanly.")
             return None
 
         # Build clean canonical filename from app title and version (100% Zero-Watermark)
@@ -380,3 +380,46 @@ def resolve_androforever_apk_url(download_page_url, title="App", version="Latest
     except Exception as e:
         print(f"[AndroForever Resolve APK Error]: {e}")
         return None
+
+
+def search_androforever(query):
+    """
+    Searches androforever.com for query string (?s=query).
+    Returns list of candidate dicts: [{'title': ..., 'url': ..., 'version': ..., 'source': 'androforever'}]
+    """
+    if not query:
+        return []
+    clean_q = re.sub(r'[^\w\s]', ' ', query).strip()
+    url = f"https://androforever.com/?s={urllib.parse.quote(clean_q)}"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=12)
+        if r.status_code != 200:
+            return []
+        soup = BeautifulSoup(r.text, 'html.parser')
+        results = []
+        seen = set()
+        for bav in soup.find_all('div', class_=lambda c: c and 'bav' in c):
+            a = bav.find('a', href=True)
+            if a and a['href'].startswith('https://androforever.com/'):
+                href = a['href'].rstrip('/') + '/'
+                if href in seen or any(k in href for k in ['/aplicaciones', '/juegos', '/blog', 'dmca']):
+                    continue
+                seen.add(href)
+                t_el = bav.find(['div', 'span'], class_='title')
+                raw_title = t_el.text.strip() if t_el else a.get('title', '')
+                v_el = bav.find('span', class_='version')
+                raw_ver = v_el.text.strip() if v_el else ''
+                clean_t = clean_androforever_title(raw_title) or href.strip('/').split('/')[-1].replace('-', ' ').title()
+                clean_v = clean_androforever_version(raw_ver) or 'Latest'
+                results.append({
+                    'title': clean_t,
+                    'version': clean_v,
+                    'url': href,
+                    'category': 'Android App',
+                    'source': 'androforever',
+                    'download_page': f"{href}download/"
+                })
+        return results
+    except Exception as e:
+        print(f"[AndroForever Search Error ({query})]: {e}")
+        return []
