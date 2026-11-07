@@ -22,5 +22,13 @@ DEVUPLOADS_API_KEY = os.getenv("DEVUPLOADS_API_KEY")
 SOURCE_BASE_URL = "https://liteapks.com"
 MAX_APKS_PER_RUN = int(os.getenv("MAX_APKS_PER_RUN", "10"))
 DATABASE_FILE = os.path.join(os.path.dirname(__file__), "sent_apks.json")
+CATALOG_FILE = os.path.join(os.path.dirname(__file__), "apps_catalog.json")
 MAX_BOT_API_SIZE_MB = int(os.getenv("MAX_BOT_API_SIZE_MB", "48"))
 LOCAL_BOT_API_URL = os.getenv("LOCAL_BOT_API_URL", "")
+
+MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "4000"))
+
+# Telegram MTProto User API Configuration (Cloud-to-Cloud Uploads)
+TG_API_ID = int(os.getenv("TG_API_ID", "39817975"))
+TG_API_HASH = os.getenv("TG_API_HASH", "1bdda9f3abecd54d80b5a4bd167962ce")
+DEVUPLOADS_BOT = os.getenv("DEVUPLOADS_BOT", "@DevUploadsUploaderBot")
