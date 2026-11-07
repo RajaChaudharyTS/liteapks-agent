@@ -358,12 +358,21 @@ def resolve_androforever_apk_url(download_page_url, title="App", version="Latest
         soup = BeautifulSoup(r.text, 'html.parser')
 
         apk_url = None
+        # Priority 1: Direct cloud.androforever.com or direct .apk links (100% direct binary)
         for a in soup.find_all('a', href=True):
-            href = a['href']
-            # Target primary download buttons
-            if 'downloadAPK' in a.get('class', []) or 'cloud.androforever.com' in href or href.endswith('.apk'):
+            href = a['href'].strip()
+            if 'cloud.androforever.com' in href or (href.endswith('.apk') and 'mediafire' not in href):
                 apk_url = href
                 break
+
+        # Priority 2: Other downloadAPK buttons that do NOT point to third-party file host landing pages
+        if not apk_url:
+            for a in soup.find_all('a', href=True):
+                href = a['href'].strip()
+                if 'downloadAPK' in a.get('class', []):
+                    if not any(bad in href.lower() for bad in ['mediafire.com', 'mega.nz', 'drive.google.com']):
+                        apk_url = href
+                        break
 
         if not apk_url:
             return None

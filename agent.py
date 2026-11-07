@@ -1,6 +1,18 @@
 import os
 import sys
 import re
+import socket
+
+# Force IPv4 socket resolution globally to eliminate 20s IPv6 connect timeout hangs on Windows/local
+try:
+    _orig_getaddrinfo = socket.getaddrinfo
+    def _forced_ipv4_getaddrinfo(*args, **kwargs):
+        responses = _orig_getaddrinfo(*args, **kwargs)
+        ipv4_res = [r for r in responses if r[0] == socket.AF_INET]
+        return ipv4_res if ipv4_res else responses
+    socket.getaddrinfo = _forced_ipv4_getaddrinfo
+except Exception:
+    pass
 import json
 import html
 import time
@@ -1959,6 +1971,21 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False, stat
 
         print(f"Download complete! Preparing to publish...")
 
+        # APK Binary Integrity Check: Validate ZIP/APK magic bytes (b'PK\x03\x04')
+        try:
+            with open(apk_path, 'rb') as f_chk:
+                magic_bytes = f_chk.read(4)
+                if magic_bytes != b'PK\x03\x04':
+                    print(f"❌ [Corrupt/Invalid APK File]: {clean_file_name} is not a valid APK binary (magic: {magic_bytes}). Discarding file.")
+                    try:
+                        os.remove(apk_path)
+                    except Exception:
+                        pass
+                    return False
+        except Exception as chk_e:
+            print(f"[APK Integrity Check Error]: {chk_e}")
+            return False
+
         if status_callback:
             try:
                 status_callback('app_uploading', {
@@ -2333,7 +2360,65 @@ def post_single_custom_app(app_name, target_version=None, status_callback=None, 
     else:
         return {'success': False, 'error': f"DevUploads upload failed for {meta['title']}."}
 
-def run_pipeline(demo_target=None, status_callback=None, force_source=None):
+def check_hourly_cooldown(min_interval_minutes=50, force=False):
+    if force:
+        return True
+    
+    if '--force' in sys.argv or os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch' or os.environ.get('FORCE_RUN') == '1':
+        print("⚡ [Manual Run Detected]: Bypassing cooldown to execute immediately on user demand.")
+        return True
+
+    cfg_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scheduler_config.json")
+    last_run_ts = 0
+    interval_min = 60
+    if os.path.exists(cfg_file):
+        try:
+            with open(cfg_file, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+                last_run_ts = cfg.get('last_run_timestamp', 0)
+                interval_min = cfg.get('interval_minutes', 60)
+        except Exception:
+            pass
+    
+    now = time.time()
+    effective_gap = max(40, interval_min - 10) * 60
+    elapsed = now - last_run_ts
+    
+    if elapsed < effective_gap:
+        mins_ago = int(elapsed / 60)
+        mins_remaining = int((effective_gap - elapsed) / 60)
+        print(f"⏳ [Hourly Cooldown Active]: Last batch posted {mins_ago}m ago. Next batch in ~{mins_remaining}m. Skipping scheduled trigger cleanly.")
+        return False
+    
+    return True
+
+def record_successful_run_timestamp():
+    cfg_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scheduler_config.json")
+    cfg = {"interval_minutes": 60, "updated_at": int(time.time()), "last_run_timestamp": int(time.time())}
+    if os.path.exists(cfg_file):
+        try:
+            with open(cfg_file, 'r', encoding='utf-8') as f:
+                existing = json.load(f)
+                if isinstance(existing, dict):
+                    cfg.update(existing)
+                    cfg["last_run_timestamp"] = int(time.time())
+        except Exception:
+            pass
+    try:
+        with open(cfg_file, 'w', encoding='utf-8') as f:
+            json.dump(cfg, f, indent=2)
+    except Exception as e:
+        print(f"[Record Run Timestamp Error]: {e}")
+
+def run_pipeline(demo_target=None, status_callback=None, force_source=None, force=False):
+    if not demo_target and not force and not check_hourly_cooldown():
+        if status_callback:
+            try:
+                status_callback('cooldown', {'status': 'Cooldown active, batch already posted within the hour.'})
+            except Exception:
+                pass
+        return 0
+
     cleanup_storage()
     sent_set = load_sent_history()
     catalog = load_apps_catalog()
@@ -2553,6 +2638,9 @@ def run_pipeline(demo_target=None, status_callback=None, force_source=None):
     save_source_state(active_source, sent_set=sent_set)
     print(f"\n🔄 [SOURCE STATE SAVED]: Completed run for {active_source.upper()}. Next run will alternate to {'ANDROFOREVER' if active_source == 'liteapks' else 'LITEAPKS'}.")
     print(f"\nPipeline Run Completed. Broadcasted {processed_count} new/updated APKs.")
+
+    if processed_count > 0:
+        record_successful_run_timestamp()
 
     # Automated GitHub Step Summary Report
     summary_file = os.getenv("GITHUB_STEP_SUMMARY")

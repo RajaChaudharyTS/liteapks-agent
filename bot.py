@@ -1,3 +1,15 @@
+import socket
+
+# Force IPv4 socket resolution globally to eliminate 20s IPv6 connect timeout hangs on Windows/local
+try:
+    _orig_getaddrinfo = socket.getaddrinfo
+    def _forced_ipv4_getaddrinfo(*args, **kwargs):
+        responses = _orig_getaddrinfo(*args, **kwargs)
+        ipv4_res = [r for r in responses if r[0] == socket.AF_INET]
+        return ipv4_res if ipv4_res else responses
+    socket.getaddrinfo = _forced_ipv4_getaddrinfo
+except Exception:
+    pass
 import os
 import sys
 import time
