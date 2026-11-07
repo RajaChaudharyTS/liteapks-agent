@@ -1053,7 +1053,7 @@ def select_10_app_batch(tier1_candidates, cat_p1_results, cat_p2_results, deep_c
         if is_banned_app("", u) or c_slug in verifier.batch_slugs:
             continue
 
-        meta = extract_app_metadata(u)
+        meta = extract_app_metadata(u, fallback_category=item.get('category'))
         if not meta:
             sent_set.add(u)
             continue
@@ -1253,7 +1253,7 @@ def scrape_latest_apk_links():
     batch = get_selected_batch(MAX_APKS_PER_RUN)
     return [x['url'] for x in batch]
 
-def extract_app_metadata(app_url):
+def extract_app_metadata(app_url, fallback_category=None):
     try:
         resp = requests.get(app_url, headers=HEADERS, timeout=15)
         if resp.status_code != 200:
@@ -1315,26 +1315,6 @@ def extract_app_metadata(app_url):
             if m_ver:
                 version = m_ver.group(1).lstrip('vV')
 
-        # Extract Real App Type from category link (info-bar-sub or breadcrumb)
-        slug = ""
-        raw_cat = ""
-        cat_sub = soup.find('div', class_='info-bar-sub')
-        cat_a = cat_sub.find('a') if cat_sub else soup.find('a', href=re.compile(r'https://liteapks\.com/(?:apps|games)/[a-zA-Z0-9\-_]+'))
-        if cat_a and cat_a.get('href'):
-            cat_m = re.search(r'https://liteapks\.com/(?:apps|games)/([a-zA-Z0-9\-_]+)', cat_a['href'])
-            if cat_m:
-                slug = cat_m.group(1).lower()
-            raw_cat = clean_text_for_telegram(cat_a.get_text(strip=True))
-
-        app_type = APP_TYPE_MAPPING.get(slug)
-        if not app_type and raw_cat:
-            if '/games/' in html_text or 'game' in slug:
-                app_type = f"{raw_cat} Game" if not raw_cat.lower().endswith('game') and not raw_cat.lower().endswith('games') else raw_cat
-            else:
-                app_type = f"{raw_cat} App" if not raw_cat.lower().endswith('app') and not raw_cat.lower().endswith('apps') else raw_cat
-        if not app_type:
-            app_type = "Android Game" if ('/games/' in html_text or 'game' in app_title.lower()) else "Android Application"
-
         # 5. Extract Real Google Play Package Name (Universal Unique Android ID)
         package_name = ""
         for a_play in soup.find_all('a', href=re.compile(r'play\.google\.com/store/apps/details\?id=')):
@@ -1344,6 +1324,99 @@ def extract_app_metadata(app_url):
                 if p not in ['io.apkmody.sai', 'com.android.vending']:
                     package_name = p
                     break
+
+        # 4b. Extract Real Individual Category & Rich App Type (Never generic 'Android Application')
+        slug = ""
+        raw_cat = ""
+
+        # Priority 1: Check all category links in the document: /(apps|games)/<category-slug>
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            m = re.search(r'/(?:apps|games)/([a-zA-Z0-9\-_]+)/?$', href)
+            if m:
+                s_cand = m.group(1).lower()
+                if s_cand not in ['apps', 'games', 'page', 'mod']:
+                    slug = s_cand
+                    raw_cat = clean_text_for_telegram(a.get_text(strip=True))
+                    break
+
+        # Priority 2: Check all info-bar-sub, breadcrumbs, and genre spans for links
+        if not slug:
+            for div in soup.find_all(['div', 'span', 'li', 'ol'], class_=lambda c: c and any(k in str(c).lower() for k in ['info-bar-sub', 'breadcrumb', 'category', 'genre'])):
+                a = div.find('a', href=True)
+                if a:
+                    m = re.search(r'/(?:apps|games)/([a-zA-Z0-9\-_]+)', a['href'])
+                    if m and m.group(1).lower() not in ['apps', 'games']:
+                        slug = m.group(1).lower()
+                        raw_cat = clean_text_for_telegram(a.get_text(strip=True))
+                        break
+
+        # Priority 3: Check info dictionary GENRE label
+        if not slug and 'GENRE' in info:
+            genre_val = info['GENRE'].strip()
+            if genre_val:
+                raw_cat = clean_text_for_telegram(genre_val)
+
+        # Map slug to rich App Type
+        app_type = APP_TYPE_MAPPING.get(slug)
+
+        # If not in mapping, clean raw_cat
+        if not app_type and raw_cat:
+            clean_raw = raw_cat.strip()
+            if clean_raw.lower() not in ['app', 'apps', 'android', 'game', 'games', 'android app', 'android application']:
+                app_type = clean_raw
+
+        # Priority 4: Candidate Category fallback if passed from scraper
+        if not app_type and fallback_category:
+            fb = str(fallback_category).strip()
+            if fb.lower() not in ['app', 'apps', 'android app', 'android application', 'top apps & games', 'popular app', 'trending app', 'candidate']:
+                app_type = fb
+
+        # Priority 5: Smart Keyword Heuristics from Title & Package Name
+        if not app_type or app_type.lower() in ['android application', 'android app', 'app']:
+            check_text = f"{app_title} {package_name}".lower()
+            if any(w in check_text for w in ['video', 'player', 'editor', 'vlog', 'cinema', 'castify', 'cut']):
+                app_type = "Video Player & Video Editor"
+            elif any(w in check_text for w in ['music', 'audio', 'song', 'mp3', 'beat', 'sound', 'spotify', 'wynk', 'gaana']):
+                app_type = "Music Player & Audio Streaming"
+            elif any(w in check_text for w in ['photo', 'camera', 'pic', 'filter', 'retouch', 'lightroom', 'picsart', 'face']):
+                app_type = "Photo & Video Editor"
+            elif any(w in check_text for w in ['vpn', 'proxy', 'shield', 'secure', 'dns']):
+                app_type = "VPN & Online Security"
+            elif any(w in check_text for w in ['cleaner', 'boost', 'battery', 'antivirus', 'cache', 'speed']):
+                app_type = "Android Utility & System Tool"
+            elif any(w in check_text for w in ['launcher', 'wallpaper', 'icon', 'theme', 'font', 'zedge', 'widget']):
+                app_type = "Launcher & Wallpaper Customization"
+            elif any(w in check_text for w in ['office', 'pdf', 'scanner', 'doc', 'note', 'sheet', 'task', 'word', 'excel']):
+                app_type = "Productivity & Office Tool"
+            elif any(w in check_text for w in ['chat', 'message', 'social', 'telegram', 'whatsapp', 'insta', 'facebook', 'twitter']):
+                app_type = "Social Media & Networking"
+            elif any(w in check_text for w in ['browser', 'downloader', 'torrent', 'web', 'download']):
+                app_type = "Web Browser & Downloader"
+            elif any(w in check_text for w in ['ott', 'movie', 'cinema', 'stream', 'tv', 'series', 'netflix', 'hotstar']):
+                app_type = "Movies & OTT Video Streaming"
+            elif any(w in check_text for w in ['fitness', 'workout', 'gym', 'health', 'yoga', 'step', 'diet']):
+                app_type = "Health, Workout & Fitness Tracker"
+            elif any(w in check_text for w in ['learn', 'study', 'course', 'edu', 'quiz', 'dictionary', 'language']):
+                app_type = "Education & Language Learning"
+            elif any(w in check_text for w in ['crypto', 'coin', 'wallet', 'finance', 'money', 'stock', 'trading']):
+                app_type = "Finance, Crypto & Stock Tracker"
+            elif any(w in check_text for w in ['action', 'shooting', 'zombie', 'strike', 'gun', 'battle', 'combat']):
+                app_type = "Action & Shooting Game"
+            elif any(w in check_text for w in ['racing', 'car', 'drive', 'drift', 'speed', 'moto']):
+                app_type = "Racing & Driving Game"
+            elif any(w in check_text for w in ['puzzle', 'brain', 'logic', 'match', 'solve', 'escape']):
+                app_type = "Brain & Puzzle Game"
+            elif any(w in check_text for w in ['arcade', 'jump', 'runner', 'dash', 'temple', 'subway']):
+                app_type = "Arcade & Casual Game"
+            elif any(w in check_text for w in ['strategy', 'clash', 'tower', 'empire', 'tactics']):
+                app_type = "Strategy & Tactical Battle Game"
+            elif any(w in check_text for w in ['rpg', 'role', 'quest', 'fantasy', 'dungeon']):
+                app_type = "Role Playing Game (RPG)"
+            elif any(w in check_text for w in ['game', 'mod money', 'unlimited money']) or '/games/' in html_text:
+                app_type = "Action & Casual Game"
+            else:
+                app_type = "Android Utility & Tools" 
 
         # 6. Download Page Target
         download_page = None
@@ -1716,23 +1789,73 @@ def generate_hashtags(meta):
         if words and words[0].lower() != clean_title.lower():
             tags.append(f"#{words[0]}")
 
-    # 2. Dynamic app-specific category tags
-    if any(w in cat for w in ['video', 'player', 'editor']):
-        tags.extend(["#VideoPlayer", "#VideoEditor", "#AndroidVideo"])
-    elif any(w in cat for w in ['music', 'audio', 'song', 'sound']):
+    # 2. Dynamic app-specific category tags (Checked in strict specificity order!)
+    # Music & Audio (Must be BEFORE Video to prevent "Music Player" matching "player")
+    if any(w in cat for w in ['music', 'audio', 'song', 'sound', 'streaming music']):
         tags.extend(["#MusicPlayer", "#AudioApp", "#MusicStreaming"])
-    elif any(w in cat for w in ['photo', 'camera', 'image', 'picture']):
+    # Photo & Camera (Must be BEFORE Video to prevent "Photo & Video Editor" matching generic video)
+    elif any(w in cat for w in ['photo', 'camera', 'photography', 'selfie', 'gallery']):
         tags.extend(["#PhotoEditor", "#Photography", "#CameraApp"])
-    elif any(w in cat for w in ['game', 'action', 'rpg', 'arcade', 'racing']):
+    # Video & Players
+    elif any(w in cat for w in ['video player', 'video editor', 'video', 'cinema', 'vlog']):
+        tags.extend(["#VideoPlayer", "#VideoEditor", "#AndroidVideo"])
+    # Personalization & Customization
+    elif any(w in cat for w in ['personalization', 'wallpaper', 'launcher', 'icon', 'theme', 'customization']):
+        tags.extend(["#Personalization", "#AndroidTheme", "#Wallpapers", "#Launcher"])
+    # Productivity & Office Tools
+    elif any(w in cat for w in ['productivity', 'office', 'pdf', 'scanner', 'doc', 'document', 'note']):
+        tags.extend(["#Productivity", "#OfficeTools", "#DocumentScanner"])
+    # VPN & Online Security
+    elif any(w in cat for w in ['vpn', 'proxy', 'security', 'shield', 'privacy']):
+        tags.extend(["#VPN", "#OnlinePrivacy", "#SecureBrowsing"])
+    # Communication & Messaging
+    elif any(w in cat for w in ['communication', 'message', 'messaging', 'chat']):
+        tags.extend(["#Communication", "#MessagingApp", "#AndroidChat"])
+    # Social Media & Networking
+    elif any(w in cat for w in ['social', 'media & networking', 'network']):
+        tags.extend(["#SocialMedia", "#AndroidSocial", "#SocialApp"])
+    # Entertainment & OTT Streaming
+    elif any(w in cat for w in ['entertainment', 'ott', 'movie', 'tv']):
+        tags.extend(["#Entertainment", "#StreamingApp", "#MoviesAndSeries"])
+    # System & Utilities
+    elif any(w in cat for w in ['utility', 'tool', 'system', 'cleaner']):
+        tags.extend(["#AndroidTools", "#UtilityApp", "#SystemTools"])
+    # Health & Fitness
+    elif any(w in cat for w in ['health', 'fitness', 'workout']):
+        tags.extend(["#HealthAndFitness", "#WorkoutApp", "#FitnessTracker"])
+    # Education & Learning
+    elif any(w in cat for w in ['education', 'learning', 'study']):
+        tags.extend(["#EducationApp", "#Learning", "#StudyTools"])
+    # Finance & Crypto
+    elif any(w in cat for w in ['finance', 'crypto', 'stock', 'wallet']):
+        tags.extend(["#FinanceApp", "#Crypto", "#StockTracker"])
+    # Action, Shooting & Battle Games
+    elif any(w in cat for w in ['action', 'shooting', 'battle', 'combat', 'strike']):
+        tags.extend(["#ActionGame", "#ShooterGame", "#AndroidGaming"])
+    # Racing Games
+    elif any(w in cat for w in ['racing', 'driving', 'car', 'drift']):
+        tags.extend(["#RacingGame", "#DrivingGame", "#CarGame"])
+    # Puzzle Games
+    elif any(w in cat for w in ['puzzle', 'brain', 'logic']):
+        tags.extend(["#PuzzleGame", "#BrainGames", "#LogicPuzzle"])
+    # Arcade & Casual Games
+    elif any(w in cat for w in ['arcade', 'casual']):
+        tags.extend(["#CasualGame", "#ArcadeGame", "#MobileGaming"])
+    # Strategy Games
+    elif any(w in cat for w in ['strategy', 'tactical']):
+        tags.extend(["#StrategyGame", "#TacticalGame", "#RTSGaming"])
+    # RPG & Simulation Games
+    elif any(w in cat for w in ['rpg', 'simulation', 'role playing']):
+        tags.extend(["#RPG", "#SimulationGame", "#MobileGaming"])
+    # General Games
+    elif 'game' in cat:
         tags.extend(["#AndroidGaming", "#ModGame", "#UnlimitedMoney"])
-    elif any(w in cat for w in ['social', 'chat', 'media', 'network']):
-        tags.extend(["#SocialApp", "#AndroidSocial"])
-    elif any(w in cat for w in ['tool', 'utility', 'productivity']):
-        tags.extend(["#AndroidTools", "#ProductivityApp", "#Utilities"])
     else:
-        cat_tag = re.sub(r'[^a-zA-Z0-9]', '', cat)
-        if cat_tag and cat_tag.lower() not in ['app', 'game', 'android']:
-            tags.append(f"#{cat_tag}")
+        # Fallback: clean words into PascalCase tags (never generic AndroidApplication)
+        cat_words = [re.sub(r'[^a-zA-Z0-9]', '', w) for w in cat.split() if w.lower() not in ['and', '&', 'app', 'apps', 'application', 'android']]
+        for cw in cat_words:
+            if len(cw) >= 3:
+                tags.append(f"#{cw.capitalize()}")
 
     # 3. Core high-ranking discovery tags
     tags.extend(["#ModAPK", "#AndroidMod", "#LatestUpdate", "#AndroModApps"])
@@ -1881,7 +2004,7 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False, stat
 
         safe_title = html.escape(meta['title'])
         safe_ver = html.escape(str(meta['version']))
-        safe_cat = html.escape(meta['app_type'])
+        safe_cat = html.escape(meta.get('app_type') or meta.get('category') or 'Android Utility & Tools')
         features_list = meta.get('features', ["VIP Premium Unlocked", "Ad-Free", "All Features Active"])
         features_text = "\n".join([f"• {html.escape(f)}" for f in features_list])
         update_badge = "🔄 <b>NEW UPDATE RELEASED!</b>\n\n" if is_update else ""
@@ -2297,9 +2420,15 @@ def run_pipeline(demo_target=None, status_callback=None, force_source=None):
         item_source = item.get('source', active_source)
 
         if item_source == 'androforever':
-            meta = item.get('meta') or androforever_scraper.extract_androforever_metadata(url)
+            meta = item.get('meta') or androforever_scraper.extract_androforever_metadata(url, fallback_category=item_cat)
         else:
-            meta = item.get('meta') or extract_app_metadata(url)
+            meta = item.get('meta') or extract_app_metadata(url, fallback_category=item_cat)
+
+        if meta:
+            if not meta.get('app_type'):
+                meta['app_type'] = item_cat
+            if not meta.get('category'):
+                meta['category'] = meta.get('app_type')
 
         if not meta:
             continue

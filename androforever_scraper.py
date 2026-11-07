@@ -214,7 +214,7 @@ def scrape_androforever_prioritized_candidates():
     return popular_candidates, category_candidates
 
 
-def extract_androforever_metadata(app_url):
+def extract_androforever_metadata(app_url, fallback_category=None):
     """
     Extracts complete, verified metadata for an AndroForever app URL.
     100% Zero-Watermark: cleans all branding and Spanish promotional text.
@@ -262,15 +262,42 @@ def extract_androforever_metadata(app_url):
             if img:
                 image_url = img.get('src') or img.get('data-src', '')
 
-        # 4. Category
-        app_type = "Tools & Utilities"
-        # Check breadcrumbs or entry category
+        # 4. Rich Individual App Category
+        app_type = None
         for a in soup.find_all('a', href=True):
             href = a['href']
             for slug_key, cat_name in CATEGORY_MAP.items():
-                if f"/{slug_key}/" in href:
+                if f"/{slug_key}/" in href or href.rstrip('/').endswith(f"/{slug_key}"):
                     app_type = cat_name
                     break
+            if app_type:
+                break
+
+        if not app_type and fallback_category:
+            fb = str(fallback_category).strip()
+            if fb.lower() not in ['popular app', 'trending app', 'android app', 'app']:
+                app_type = fb
+
+        if not app_type:
+            lt = title.lower()
+            if any(w in lt for w in ['video', 'player', 'editor', 'cut', 'vlog', 'cinema', 'castify']):
+                app_type = "Video Players & Editors"
+            elif any(w in lt for w in ['music', 'audio', 'song', 'mp3', 'spotify', 'sound']):
+                app_type = "Music & Audio"
+            elif any(w in lt for w in ['photo', 'camera', 'pic', 'filter', 'retouch', 'lightroom', 'picsart']):
+                app_type = "Photography & Photo Editor"
+            elif any(w in lt for w in ['vpn', 'proxy', 'shield', 'secure']):
+                app_type = "VPN & Online Security"
+            elif any(w in lt for w in ['launcher', 'wallpaper', 'icon', 'theme', 'font', 'zedge']):
+                app_type = "Personalization & Customization"
+            elif any(w in lt for w in ['office', 'pdf', 'scanner', 'doc', 'note', 'sheet', 'task']):
+                app_type = "Productivity & Office"
+            elif any(w in lt for w in ['chat', 'message', 'social', 'telegram', 'whatsapp', 'insta']):
+                app_type = "Social Media & Networking"
+            elif any(w in lt for w in ['movie', 'tv', 'stream', 'cinema', 'ott']):
+                app_type = "Entertainment & OTT Streaming"
+            else:
+                app_type = "Tools & Utilities" 
 
         # 5. Features
         features = [
@@ -415,7 +442,15 @@ def search_androforever(query):
                     'title': clean_t,
                     'version': clean_v,
                     'url': href,
-                    'category': 'Android App',
+                    'category': (
+                        'Video Players & Editors' if any(w in clean_t.lower() for w in ['video', 'player', 'editor', 'cut']) else
+                        'Music & Audio' if any(w in clean_t.lower() for w in ['music', 'audio', 'song', 'spotify']) else
+                        'Photography & Photo Editor' if any(w in clean_t.lower() for w in ['photo', 'camera', 'pic', 'filter']) else
+                        'VPN & Online Security' if any(w in clean_t.lower() for w in ['vpn', 'proxy', 'shield']) else
+                        'Personalization & Customization' if any(w in clean_t.lower() for w in ['wallpaper', 'launcher', 'icon', 'theme']) else
+                        'Productivity & Office' if any(w in clean_t.lower() for w in ['office', 'pdf', 'scanner', 'doc']) else
+                        'Tools & Utilities'
+                    ),
                     'source': 'androforever',
                     'download_page': f"{href}download/"
                 })
