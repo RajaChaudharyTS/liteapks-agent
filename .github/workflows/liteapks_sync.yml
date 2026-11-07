@@ -2,8 +2,12 @@ name: LiteAPKs to Telegram Auto-Poster
 
 on:
   schedule:
-    # Runs automatically every 1 hour (at minute 0 of every hour)
-    - cron: '0 * * * *'
+    # Redundant Off-Peak Triggers ensuring posts NEVER miss an hour:
+    # Runs at off-peak minutes 15 and 45 (eliminates GitHub queue delay spikes at minute 0).
+    # The internal hourly cooldown in agent.py enforces exact ~1-hour intervals (~50m minimum gap).
+    # If GitHub cluster delays or queues one run, the second catch-up run guarantees 0 missed hours.
+    - cron: '15 * * * *'
+    - cron: '45 * * * *'
   workflow_dispatch: # Allows manual trigger from GitHub UI or Telegram Bot anytime
 
 concurrency:
