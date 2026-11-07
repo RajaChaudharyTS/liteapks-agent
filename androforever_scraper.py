@@ -167,6 +167,8 @@ def scrape_androforever_prioritized_candidates():
     # =========================================================================
     # TIER 2 & 3: Category / Non-Popular Apps (Tools, Media, Games)
     # =========================================================================
+    # Focus category scrapers on regular applications (Tools, Media, Social, etc.)
+    # Heavy 3D games (> 50 MB) cannot be posted as Telegram raw documents
     categories_to_scrape = [
         ('herramientas', 'https://androforever.com/aplicaciones/herramientas/'),
         ('aplicaciones-de-video', 'https://androforever.com/aplicaciones/aplicaciones-de-video/'),
@@ -177,13 +179,7 @@ def scrape_androforever_prioritized_candidates():
         ('social', 'https://androforever.com/aplicaciones/social/'),
         ('educacion', 'https://androforever.com/aplicaciones/educacion/'),
         ('entretenimiento', 'https://androforever.com/aplicaciones/entretenimiento/'),
-        ('salud', 'https://androforever.com/aplicaciones/salud/'),
-        ('accion', 'https://androforever.com/juegos/accion/'),
-        ('arcade', 'https://androforever.com/juegos/arcade/'),
-        ('carreras', 'https://androforever.com/juegos/carreras/'),
-        ('aventura', 'https://androforever.com/juegos/aventura/'),
-        ('estrategia', 'https://androforever.com/juegos/estrategia/'),
-        ('simulacion', 'https://androforever.com/juegos/simulacion/')
+        ('salud', 'https://androforever.com/aplicaciones/salud/')
     ]
 
     for cat_slug, cat_url in categories_to_scrape:
@@ -357,6 +353,11 @@ def resolve_androforever_apk_url(download_page_url, title="App", version="Latest
                     size_mb = round(int(cl) / (1024 * 1024), 2)
         except Exception:
             pass
+
+        # Early size guard: If APK is larger than 49.0 MB, it cannot be sent as Telegram document
+        if size_mb > 49.0:
+            print(f"⏩ [AndroForever Size Guard]: {title} ({size_mb} MB) exceeds Telegram 49.0 MB document limit. Skipping cleanly.")
+            return None
 
         # Build clean canonical filename from app title and version (100% Zero-Watermark)
         safe_title = re.sub(r'[^\w]+', '_', strip_androforever_branding(title)).strip('_')

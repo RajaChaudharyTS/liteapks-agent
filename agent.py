@@ -24,28 +24,77 @@ import androforever_scraper
 
 SOURCE_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "source_state.json")
 
-def get_current_source():
-    """Determines alternating source: 'liteapks' or 'androforever'."""
-    try:
-        if os.path.exists(SOURCE_STATE_FILE):
+def get_current_source(sent_set=None):
+    """
+    Determines alternating source: 'liteapks' or 'androforever'.
+    Stored seamlessly inside sent_apks.json as a special state key (_SOURCE_STATE_::<source>)
+    AND in source_state.json. This guarantees 100% persistence in GitHub Actions!
+    """
+    # 1. Check in-memory sent_set
+    if sent_set:
+        for item in sent_set:
+            if isinstance(item, str) and item.startswith("_SOURCE_STATE_::"):
+                last = item.split("::")[-1].lower()
+                return 'androforever' if last == 'liteapks' else 'liteapks'
+
+    # 2. Check sent_apks.json file directly
+    if os.path.exists(DATABASE_FILE):
+        try:
+            with open(DATABASE_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                for item in data:
+                    if isinstance(item, str) and item.startswith("_SOURCE_STATE_::"):
+                        last = item.split("::")[-1].lower()
+                        return 'androforever' if last == 'liteapks' else 'liteapks'
+        except Exception:
+            pass
+
+    # 3. Fallback to source_state.json
+    if os.path.exists(SOURCE_STATE_FILE):
+        try:
             with open(SOURCE_STATE_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                last_source = data.get('last_source', 'androforever').lower()
-                return 'androforever' if last_source == 'liteapks' else 'liteapks'
-    except Exception as e:
-        print(f"[Source State Read Warning]: {e}")
-    return 'liteapks'
+                last = data.get('last_source', 'androforever').lower()
+                return 'androforever' if last == 'liteapks' else 'liteapks'
+        except Exception:
+            pass
 
-def save_source_state(source_used):
-    """Saves the last used source to alternate next time."""
+    return 'androforever'
+
+def save_source_state(source_used, sent_set=None):
+    """
+    Saves the last used source to alternate next time.
+    Persists in source_state.json AND directly inside sent_apks.json so GitHub Actions commits it!
+    """
+    source_used = source_used.lower()
+
+    # 1. Write source_state.json
     try:
         with open(SOURCE_STATE_FILE, 'w', encoding='utf-8') as f:
             json.dump({
-                'last_source': source_used.lower(),
+                'last_source': source_used,
                 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
             }, f, indent=2)
     except Exception as e:
         print(f"[Source State Write Warning]: {e}")
+
+    # 2. Persist in sent_apks.json
+    try:
+        if os.path.exists(DATABASE_FILE):
+            with open(DATABASE_FILE, 'r', encoding='utf-8') as f:
+                db_items = json.load(f)
+            clean_items = [x for x in db_items if not (isinstance(x, str) and x.startswith("_SOURCE_STATE_::"))]
+            clean_items.append(f"_SOURCE_STATE_::{source_used}")
+            with open(DATABASE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(clean_items, f, indent=2)
+            if sent_set is not None:
+                to_del = [x for x in sent_set if str(x).startswith("_SOURCE_STATE_::")]
+                for td in to_del:
+                    sent_set.discard(td)
+                sent_set.add(f"_SOURCE_STATE_::{source_used}")
+            print(f"💾 [SOURCE STATE PERSISTED IN sent_apks.json]: Last source = {source_used.upper()}")
+    except Exception as dbe:
+        print(f"[Database State Persist Error]: {dbe}")
 from config import (
     BOT_TOKEN,
     CHANNEL_ID,
@@ -1698,6 +1747,13 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False, stat
     chat = target_chat or CHANNEL_ID
     api_base = get_telegram_api_base()
 
+    # HARD CEILING: Bot tokens have a strict 50.0 MB document upload limit.
+    # Every post in @AndroModApps MUST include the raw APK document.
+    # Never attempt to process or post apps > 49.0 MB.
+    if apk_info.get('size_mb', 0) > 49.0:
+        print(f"⏩ [Telegram Size Guard]: '{meta.get('title')}' ({apk_info.get('size_mb')} MB) exceeds 49.0 MB limit. Raw APK document is mandatory on Telegram. Skipping cleanly.")
+        return False
+
     # Pre-clean storage proactively before any new download
     cleanup_storage()
 
@@ -1876,7 +1932,7 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False, stat
         # =========================================================================
         photo_title_text = re.sub(r'(?i)\.apk$', '', clean_file_name)
         photo_caption = f"<b>{html.escape(photo_title_text)}</b>"
-        photo_sent = False
+        photo_msg_id = None
 
         if os.path.exists(img_path):
             try:
@@ -1889,30 +1945,31 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False, stat
                     )
                     res_p = r_photo.json()
                     if res_p.get('ok'):
-                        photo_sent = True
-                        print(f"✅ [Photo Banner Sent]: {photo_title_text} (Msg ID: {res_p['result']['message_id']})")
+                        photo_msg_id = res_p.get('result', {}).get('message_id')
+                        print(f"✅ [Photo Banner Sent]: {photo_title_text} (Msg ID: {photo_msg_id})")
                     else:
                         print(f"[Photo File Send Error]: {res_p}")
             except Exception as pe:
                 print(f"[Photo File Exception]: {pe}")
 
-        if not photo_sent and meta.get('image_url'):
+        if not photo_msg_id and meta.get('image_url'):
             try:
                 r_p_url = requests.post(
                     f"{api_base}/sendPhoto",
                     data={'chat_id': chat, 'caption': photo_caption, 'parse_mode': 'HTML', 'photo': meta['image_url']},
                     timeout=35
                 )
-                if r_p_url.json().get('ok'):
-                    photo_sent = True
-                    print(f"✅ [Photo URL Sent]: {photo_title_text}")
+                res_pu = r_p_url.json()
+                if res_pu.get('ok'):
+                    photo_msg_id = res_pu.get('result', {}).get('message_id')
+                    print(f"✅ [Photo URL Sent]: {photo_title_text} (Msg ID: {photo_msg_id})")
             except Exception as pue:
                 print(f"[Photo URL Error]: {pue}")
 
         # =========================================================================
-        # MESSAGE 2: Raw APK Document (<= 49.5 MB) OR Rich Message (> 49.5 MB)
+        # MESSAGE 2: Raw APK Document (MANDATORY: Must succeed for post to count)
         # =========================================================================
-        if apk_info.get('size_mb', 0) <= 49.5 and os.path.exists(apk_path):
+        if apk_info.get('size_mb', 0) <= 49.0 and os.path.exists(apk_path):
             try:
                 print(f"📤 [Uploading Raw Document]: {clean_file_name} ({apk_info['size_mb']} MB) to Telegram...")
                 with open(apk_path, 'rb') as f_doc:
@@ -1934,21 +1991,29 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False, stat
             except Exception as de:
                 print(f"[sendDocument Exception]: {de}")
 
-        # Fallback if document upload failed or file size > 49.5 MB
+        # STRICT QUALITY ENFORCEMENT:
+        # Every post MUST include the raw APK document file.
+        # If sendDocument failed, do NOT send a text-only fallback message!
+        # Delete the photo banner so no incomplete/broken post stays on the channel.
         if not posted_success:
-            try:
-                r_msg = requests.post(
-                    f"{api_base}/sendMessage",
-                    data={'chat_id': chat, 'text': caption, 'parse_mode': 'HTML'},
-                    timeout=35
-                )
-                if r_msg.json().get('ok'):
-                    print(f"✅ Successfully posted {meta['title']} (message fallback) to Telegram ({chat})!")
-                    posted_success = True
-                else:
-                    print(f"Telegram sendMessage Error: {r_msg.json()}")
-            except Exception as me:
-                print(f"[Send Message Error]: {me}")
+            print(f"❌ [Raw APK Document FAILED]: {meta['title']} ({apk_info.get('size_mb')} MB). Deleting orphaned photo banner to avoid incomplete post on channel.")
+            if photo_msg_id:
+                try:
+                    requests.post(
+                        f"{api_base}/deleteMessage",
+                        data={'chat_id': chat, 'message_id': photo_msg_id},
+                        timeout=15
+                    )
+                    print(f"🗑️ [Rollback Photo]: Deleted orphaned photo banner (Msg ID: {photo_msg_id})")
+                except Exception as del_err:
+                    print(f"[Rollback Photo Error]: {del_err}")
+            send_admin_alert(
+                f"⚠️ <b>Raw APK Post Failed</b>\n"
+                f"<b>App:</b> {safe_title} (v{safe_ver})\n"
+                f"<b>Size:</b> {apk_info.get('size_mb')} MB\n"
+                f"<i>Raw APK sendDocument failed. Photo banner was rolled back. Pipeline will advance to the next app.</i>"
+            )
+            return False
 
         # FREE DISK STORAGE: Purge local APK immediately after Telegram posting
         if os.path.exists(apk_path):
@@ -2121,7 +2186,7 @@ def run_pipeline(demo_target=None, status_callback=None, force_source=None):
     verifier = AppSelectionVerifierSubagent(sent_set=sent_set, catalog=catalog, live_sync=True)
 
     # Alternate Round-Robin Source Selection (10 LiteAPKs 🔄 10 AndroForever)
-    active_source = (force_source or get_current_source()).lower()
+    active_source = (force_source or get_current_source(sent_set=sent_set)).lower()
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 🔄 Starting Autonomous Pipeline [SOURCE: {active_source.upper()}]...")
     print(f"Database contains {len(sent_set)} entries tracked.")
 
@@ -2171,7 +2236,7 @@ def run_pipeline(demo_target=None, status_callback=None, force_source=None):
     if not selected_batch:
         print(f"ℹ️ No unposted candidate APKs found for {active_source.upper()}. Database is up to date.")
         # Automatically toggle source so next run checks the other website
-        save_source_state(active_source)
+        save_source_state(active_source, sent_set=sent_set)
         if status_callback:
             try:
                 status_callback('done', {'processed': 0, 'total_db': len(sent_set), 'completed_apps': []})
@@ -2243,9 +2308,13 @@ def run_pipeline(demo_target=None, status_callback=None, force_source=None):
 
         print(f"Found APK: {meta['title']} (v{version}) | Size: {apk_info['size_mb']} MB")
 
-        max_allowed_mb = int(os.getenv("MAX_UPLOAD_SIZE_MB", "4000")) if DEVUPLOADS_API_KEY else MAX_BOT_API_SIZE_MB
-        if apk_info['size_mb'] > max_allowed_mb:
-            print(f"⚠️ Skipping {meta['title']}: File size ({apk_info['size_mb']} MB) exceeds {max_allowed_mb} MB threshold.")
+        # Mandatory Raw APK Rule:
+        # Every channel post MUST include the raw APK file attached directly on Telegram.
+        # Telegram Bot API sendDocument has a hard 50.0 MB limit.
+        # Therefore, any automated candidate with size > 49.0 MB MUST be skipped.
+        MAX_TELEGRAM_DOC_SIZE_MB = 49.0
+        if apk_info['size_mb'] > MAX_TELEGRAM_DOC_SIZE_MB:
+            print(f"⏩ [Oversized Candidate Skipped]: {meta['title']} ({apk_info['size_mb']} MB) > {MAX_TELEGRAM_DOC_SIZE_MB} MB. Must include raw APK on Telegram. Advancing to next candidate.")
             continue
 
         # Disk space guard
@@ -2320,7 +2389,7 @@ def run_pipeline(demo_target=None, status_callback=None, force_source=None):
             time.sleep(3)
 
         cleanup_storage()
-    save_source_state(active_source)
+    save_source_state(active_source, sent_set=sent_set)
     print(f"\n🔄 [SOURCE STATE SAVED]: Completed run for {active_source.upper()}. Next run will alternate to {'ANDROFOREVER' if active_source == 'liteapks' else 'LITEAPKS'}.")
     print(f"\nPipeline Run Completed. Broadcasted {processed_count} new/updated APKs.")
 
