@@ -1184,11 +1184,16 @@ def handle_callback_query(cb):
     chat_id = cb.get('message', {}).get('chat', {}).get('id')
     data = cb.get('data', '')
 
-    if data == 'trigger_demand':
-        answer_callback(cb_id)
-        prompt_demand_app_name(chat_id, user_id)
-        return
-
+    if data == 'trigger_demand':
+
+        answer_callback(cb_id)
+
+        prompt_demand_app_name(chat_id, user_id)
+
+        return
+
+
+
     if data.startswith('dl_yes_'):
         session_id = data[len('dl_yes_'):]
         handle_download_confirm(cb, session_id)
@@ -1374,25 +1379,30 @@ def main_poll_loop():
                 elif text.startswith('/demand') or text.startswith('/request'):
                     parts = text.split(maxsplit=1)
                     if len(parts) > 1 and parts[1].strip():
+                        # One-line command: /demand Netflix
+                        set_user_state(user_id, None)
                         app_q = parts[1].strip()
                         first_name = from_user.get('first_name', '').strip()
                         last_name = from_user.get('last_name', '').strip()
                         u_name = f"{first_name} {last_name}".strip() or first_name or "Community Member"
                         handle_app_search_request(chat_id, user_id, app_q, user_name=u_name)
                     else:
-                        send_msg(
-                            chat_id,
-                            "👇 <b>Type and send the name of any Android app or game you want:</b>\n\n"
-                            "(e.g., <code>Netflix</code>, <code>Spotify</code>, <code>CapCut</code>, <code>KineMaster</code>)\n\n"
-                            "<i>Or send:</i> <code>/demand &lt;app_name&gt;</code>"
-                        )
+                        # 3-dots Menu command /demand triggered
+                        prompt_demand_app_name(chat_id, user_id)
+
+                elif text.lower().strip() in ['demand your app', 'demand app', 'demand', 'request your app', 'request app', '🎯 demand your app', 'demand your favorite app']:
+                    # User sent text matching 'demand your app'
+                    prompt_demand_app_name(chat_id, user_id)
+
+                elif text in ['🔍 Search Modded App', '🎯 Demand Your App']:
+                    prompt_demand_app_name(chat_id, user_id)
 
                 elif text in ['/help', '❓ Help']:
                     send_msg(chat_id, (
                         "💡 <b>How to Use File Sharing & App Wishlist Bot:</b>\n\n"
-                        "📱 <b>1. Request / Search Modded Apps:</b>\n"
-                        "• Simply type and send the app name (e.g., <code>Netflix</code>, <code>Spotify</code>) or use <code>/demand &lt;app_name&gt;</code>.\n"
-                        "• If found in database or websites, tap <b>'Yes, Download Now'</b> to get the direct high-speed DevUploads link!\n\n"
+                        "📱 <b>1. Request / Demand Modded Apps:</b>\n"
+                        "• Tap <b>'🎯 Demand Your App'</b> or send <code>/demand</code> (or select it from 3-dots Menu).\n"
+                        "• Bot will ask for your app name. Type it to find & download the verified APK!\n\n"
                         "📁 <b>2. Upload & Share Files (DevUploads):</b>\n"
                         "• Directly send any APK, document, video, or photo to this chat.\n"
                         "• The bot will instantly upload it to <b>DevUploads</b> and give you the high-speed download link!\n\n"
@@ -1401,18 +1411,23 @@ def main_poll_loop():
                         f"• {CHANNEL_DEALS_HANDLE} (Daily Loot Deals)"
                     ))
 
-                elif text in ['🔍 Search Modded App', '📁 Share a File']:
-                    if text == '🔍 Search Modded App':
-                        send_msg(chat_id, "👇 <b>Type and send the name of any Android app or game you want:</b>\n\n(e.g., <code>Spotify</code>, <code>CapCut</code>, <code>Lightroom</code>)")
-                    else:
-                        send_msg(chat_id, "📁 <b>Send any file (up to 2,000 MB / 2 GB) here!</b>\n\nThe bot will instantly generate a permanent high-speed cloud sharing link for you.")
+                elif text in ['📁 Share a File']:
+                    send_msg(chat_id, "📁 <b>Send any file (up to 2,000 MB / 2 GB) here!</b>\n\nThe bot will instantly upload it to DevUploads and generate a permanent high-speed download link for you.")
 
                 elif text and not text.startswith('/'):
-                    # User sent an App Search Query!
-                    first_name = from_user.get('first_name', '').strip()
-                    last_name = from_user.get('last_name', '').strip()
-                    u_name = f"{first_name} {last_name}".strip() or first_name or "Community Member"
-                    handle_app_search_request(chat_id, user_id, text, user_name=u_name)
+                    # STRICT USER DIRECTIVE:
+                    # If user is in 'awaiting_demand_app' state (triggered via 'demand your app' or /demand),
+                    # process the text as their requested app name.
+                    # Otherwise, if text was sent directly without 'demand your app', DO NOT search for apps! Zero response.
+                    if get_user_state_mode(user_id) == 'awaiting_demand_app':
+                        set_user_state(user_id, None) # Consume state
+                        first_name = from_user.get('first_name', '').strip()
+                        last_name = from_user.get('last_name', '').strip()
+                        u_name = f"{first_name} {last_name}".strip() or first_name or "Community Member"
+                        handle_app_search_request(chat_id, user_id, text, user_name=u_name)
+                    else:
+                        # Direct text without 'demand your app' trigger -> Strictly no app search / no response!
+                        pass
 
         except Exception as e:
             print(f"[Polling Error]: {e}")
