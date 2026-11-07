@@ -2473,15 +2473,38 @@ def run_pipeline(demo_target=None, status_callback=None, force_source=None, forc
             pass
 
     if not selected_batch:
-        print(f"ℹ️ No unposted candidate APKs found for {active_source.upper()}. Database is up to date.")
-        # Automatically toggle source so next run checks the other website
-        save_source_state(active_source, sent_set=sent_set)
-        if status_callback:
-            try:
-                status_callback('done', {'processed': 0, 'total_db': len(sent_set), 'completed_apps': []})
-            except Exception:
-                pass
-        return 0
+        alt_source = 'liteapks' if active_source == 'androforever' else 'androforever'
+        print(f"\n⚠️ [{active_source.upper()} had 0 candidates]: Auto-failing over to backup source [{alt_source.upper()}] to ensure batch completion!")
+        active_source = alt_source
+        if active_source == 'androforever':
+            pop_candidates, cat_candidates = androforever_scraper.scrape_androforever_prioritized_candidates()
+            selected_batch = select_androforever_10_app_batch(pop_candidates, cat_candidates, sent_set, target_count=MAX_APKS_PER_RUN, verifier=verifier)
+            fallback_candidates = [item for item in (pop_candidates + cat_candidates) if item['url'] not in {x['url'] for x in selected_batch}]
+            fallback_stream = (
+                item for item in fallback_candidates
+                if verifier.get_canonical_slug(item['url']) not in verifier.batch_slugs
+            )
+        else:
+            tier1, cat_p1, cat_p2, deep_catalog = scrape_prioritized_candidates()
+            selected_batch = select_10_app_batch(tier1, cat_p1, cat_p2, deep_catalog, sent_set, target_count=MAX_APKS_PER_RUN, verifier=verifier)
+            selected_urls = {item['url'] for item in selected_batch}
+            fallback_stream = (
+                item for item in generate_prioritized_candidates(tier1, cat_p1, cat_p2, deep_catalog)
+                if item['url'] not in selected_urls and verifier.get_canonical_slug(item['url']) not in verifier.batch_slugs
+            )
+
+        summary_text = format_batch_summary(selected_batch)
+        print(summary_text)
+
+        if not selected_batch:
+            print(f"ℹ️ No unposted candidate APKs found across BOTH sources. Database is completely up to date.")
+            save_source_state(active_source, sent_set=sent_set)
+            if status_callback:
+                try:
+                    status_callback('done', {'processed': 0, 'total_db': len(sent_set), 'completed_apps': []})
+                except Exception:
+                    pass
+            return 0
 
     processed_count = 0
     processed_slugs = set()
