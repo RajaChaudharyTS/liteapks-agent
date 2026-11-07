@@ -1047,9 +1047,9 @@ def handle_callback_query(cb):
                 users = load_users()
                 pending_q = users.get(str(user_id), {}).get('pending_query', '')
             if pending_q:
-                first_name = from_user.get('first_name', '')
-                last_name = from_user.get('last_name', '')
-                u_name = f"{first_name} {last_name}".strip() or from_user.get('username') or "Valued Member"
+                first_name = from_user.get('first_name', '').strip()
+                last_name = from_user.get('last_name', '').strip()
+                u_name = f"{first_name} {last_name}".strip() or first_name or "Community Member"
                 handle_app_search_request(chat_id, user_id, pending_q, user_name=u_name)
             else:
                 send_msg(chat_id, "✅ <b>Channel verified!</b>\n\nType and send the name of any app you would like to download:")
@@ -1206,9 +1206,9 @@ def main_poll_loop():
 
                 elif text and not text.startswith('/'):
                     # User sent an App Search Query!
-                    first_name = from_user.get('first_name', '')
-                    last_name = from_user.get('last_name', '')
-                    u_name = f"{first_name} {last_name}".strip() or from_user.get('username') or "Valued Member"
+                    first_name = from_user.get('first_name', '').strip()
+                    last_name = from_user.get('last_name', '').strip()
+                    u_name = f"{first_name} {last_name}".strip() or first_name or "Community Member"
                     handle_app_search_request(chat_id, user_id, text, user_name=u_name)
 
         except Exception as e:

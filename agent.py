@@ -1886,11 +1886,12 @@ def post_apk_to_telegram(meta, apk_info, target_chat=None, is_update=False, stat
         features_text = "\n".join([f"• {html.escape(f)}" for f in features_list])
         update_badge = "🔄 <b>NEW UPDATE RELEASED!</b>\n\n" if is_update else ""
 
-        # User Demand Plain-Text Attribution (Strictly non-clickable plain text)
+        # User Demand Plain-Text Attribution (Strictly non-clickable plain text, Account Name only)
         demand_badge = ""
         demand_footer = ""
         if demanded_by:
-            clean_name = html.escape(re.sub(r'[@<>]', '', str(demanded_by)).strip())
+            # Strip @, URL characters, and HTML tags to guarantee it is NEVER a clickable link or mention
+            clean_name = html.escape(re.sub(r'[@<>:/]', '', str(demanded_by)).strip())
             if not clean_name:
                 clean_name = "Community Member"
             demand_badge = (
