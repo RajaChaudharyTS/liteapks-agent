@@ -2,13 +2,8 @@ name: LiteAPKs to Telegram Auto-Poster
 
 on:
   schedule:
-    # 3x Redundant Cron Triggers:
-    # 1. Runs every 30 minutes on POSIX step interval
-    - cron: '*/30 * * * *'
-    # 2. Explicit off-peak minute 15
-    - cron: '15 * * * *'
-    # 3. Explicit off-peak minute 45
-    - cron: '45 * * * *'
+    # Runs automatically every 1 hour (at minute 0 of every hour)
+    - cron: '0 * * * *'
   workflow_dispatch: # Allows manual trigger from GitHub UI or Telegram Bot anytime
 
 concurrency:
