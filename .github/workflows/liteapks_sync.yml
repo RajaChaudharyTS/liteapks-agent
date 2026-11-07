@@ -53,8 +53,8 @@ jobs:
         run: |
           git config --global user.name "LiteAPKs-Agent-Bot"
           git config --global user.email "bot@liteapks-agent.local"
-          git add sent_apks.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: update sent APKs database" && git pull --rebase && git push)
+          git add -A
+          git diff --staged --quiet || (git commit -m "chore: update sent APKs database and state [skip ci]" && git pull --rebase origin main && git push origin main)
 
       - name: Send Telegram SOS Alert on Failure
         if: failure()
