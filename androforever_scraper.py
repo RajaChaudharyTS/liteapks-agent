@@ -236,7 +236,8 @@ def extract_androforever_metadata(app_url, fallback_category=None):
 
         title = clean_androforever_title(raw_title)
         if not title:
-            slug = clean_url.strip('/').split('/')[-1]
+            base_slug_url = re.sub(r'/download/?$', '', clean_url.strip('/'))
+            slug = base_slug_url.split('/')[-1]
             title = re.sub(r'-(?:mod|apk|premium|pro|plus|android|mobile)$', '', slug).replace('-', ' ').title()
 
         # 2. Version
@@ -262,16 +263,31 @@ def extract_androforever_metadata(app_url, fallback_category=None):
             if img:
                 image_url = img.get('src') or img.get('data-src', '')
 
-        # 4. Rich Individual App Category
+        # 4. Rich Individual App Category (Checks post breadcrumbs / meta first, NOT global navbar)
         app_type = None
-        for a in soup.find_all('a', href=True):
-            href = a['href']
-            for slug_key, cat_name in CATEGORY_MAP.items():
-                if f"/{slug_key}/" in href or href.rstrip('/').endswith(f"/{slug_key}"):
-                    app_type = cat_name
+
+        # Priority 1: Check post-categories / entry-header / breadcrumbs specifically
+        post_cat_container = soup.find('ul', class_='post-categories') or soup.find(class_=re.compile(r'breadcrumb|entry-meta|cat-links'))
+        if post_cat_container:
+            for a in post_cat_container.find_all('a', href=True):
+                href = a['href'].rstrip('/')
+                for slug_key, cat_name in CATEGORY_MAP.items():
+                    if f"/{slug_key}" in href:
+                        app_type = cat_name
+                        break
+                if app_type:
                     break
-            if app_type:
-                break
+
+        # Priority 2: Check rel="category tag"
+        if not app_type:
+            for a in soup.find_all('a', rel=lambda r: r and 'category' in r):
+                href = a.get('href', '').rstrip('/')
+                for slug_key, cat_name in CATEGORY_MAP.items():
+                    if f"/{slug_key}" in href:
+                        app_type = cat_name
+                        break
+                if app_type:
+                    break
 
         if not app_type and fallback_category:
             fb = str(fallback_category).strip()
@@ -279,20 +295,26 @@ def extract_androforever_metadata(app_url, fallback_category=None):
                 app_type = fb
 
         if not app_type:
-            lt = title.lower()
-            if any(w in lt for w in ['video', 'player', 'editor', 'cut', 'vlog', 'cinema', 'castify']):
+            lt = f"{title} {raw_title}".lower()
+            if any(w in lt for w in ['video', 'player', 'editor', 'cut', 'vlog', 'cinema', 'recorder', 'record', 'castify', 'screen']):
                 app_type = "Video Players & Editors"
-            elif any(w in lt for w in ['music', 'audio', 'song', 'mp3', 'spotify', 'sound']):
+            elif any(w in lt for w in ['music', 'audio', 'song', 'mp3', 'spotify', 'sound', 'deezer', 'equalizer']):
                 app_type = "Music & Audio"
-            elif any(w in lt for w in ['photo', 'camera', 'pic', 'filter', 'retouch', 'lightroom', 'picsart']):
+            elif any(w in lt for w in ['photo', 'camera', 'pic', 'filter', 'retouch', 'lightroom', 'picsart', 'selfie']):
                 app_type = "Photography & Photo Editor"
-            elif any(w in lt for w in ['vpn', 'proxy', 'shield', 'secure']):
+            elif any(w in lt for w in ['vpn', 'proxy', 'shield', 'secure', 'dns', 'privacy']):
                 app_type = "VPN & Online Security"
+            elif any(w in lt for w in ['battery', 'guru', 'cleaner', 'speed test', 'nperf', 'boost', 'speed', 'cache', 'ram', 'cpu', 'system']):
+                app_type = "Tools & Utilities"
+            elif any(w in lt for w in ['ai', 'deepseek', 'chatgpt', 'gpt', 'bot', 'search', 'assistant']):
+                app_type = "Productivity & AI Tools"
             elif any(w in lt for w in ['launcher', 'wallpaper', 'icon', 'theme', 'font', 'zedge']):
                 app_type = "Personalization & Customization"
-            elif any(w in lt for w in ['office', 'pdf', 'scanner', 'doc', 'note', 'sheet', 'task']):
+            elif any(w in lt for w in ['office', 'pdf', 'scanner', 'doc', 'note', 'notebook', 'sheet', 'task']):
                 app_type = "Productivity & Office"
-            elif any(w in lt for w in ['chat', 'message', 'social', 'telegram', 'whatsapp', 'insta']):
+            elif any(w in lt for w in ['downloader', 'browser', 'snaptube', 'vidmate', 'tube']):
+                app_type = "Web Browser & Downloader"
+            elif any(w in lt for w in ['chat', 'message', 'social', 'telegram', 'whatsapp', 'insta', 'facebook', 'twitter']):
                 app_type = "Social Media & Networking"
             elif any(w in lt for w in ['movie', 'tv', 'stream', 'cinema', 'ott']):
                 app_type = "Entertainment & OTT Streaming"
@@ -328,7 +350,10 @@ def extract_androforever_metadata(app_url, fallback_category=None):
 
         download_page = f"{clean_url}download/"
 
+        base_u = re.sub(r'/download/?$', '', clean_url.strip('/'))
+        app_slug = base_u.split('/')[-1]
         return {
+            'slug': app_slug,
             'title': title,
             'version': version or "Latest",
             'app_type': app_type,

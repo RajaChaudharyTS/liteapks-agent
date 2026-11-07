@@ -878,13 +878,38 @@ def trigger_manual_run(chat_id=None):
     t.start()
 
 def auto_scheduler_loop():
-    """Dynamic interval scheduler running independently in background with live countdown timer."""
-    global next_scheduled_run_time
+    """
+    Intelligent fail-safe interval scheduler running independently in background with live countdown timer.
+    Synchronizes seamlessly with GitHub Actions: if GitHub Actions ran in cloud, local scheduler resets its timer.
+    If GitHub Actions is delayed or down, local scheduler catches it and posts the 10 apps automatically!
+    """
+    global next_scheduled_run_time, last_run_time
     cur_mins = get_interval_minutes()
     print(f"⏰ [Scheduler] Auto-Scheduler started! Active Interval: {get_interval_display(cur_mins)}")
     
-    if not next_scheduled_run_time or next_scheduled_run_time <= time.time():
-        next_scheduled_run_time = time.time() + (cur_mins * 60)
+    cfg_file = os.path.join(os.path.dirname(__file__), "scheduler_config.json")
+    last_run_ts = 0
+    if os.path.exists(cfg_file):
+        try:
+            with open(cfg_file, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+                last_run_ts = cfg.get('last_run_timestamp', 0)
+        except Exception:
+            pass
+
+    now = time.time()
+    if last_run_ts > 0:
+        last_run_time = last_run_ts
+        elapsed = now - last_run_ts
+        target_gap = cur_mins * 60
+        if elapsed >= target_gap:
+            next_scheduled_run_time = now + 10
+            print(f"⏰ [Scheduler Watchdog] Overdue by {int(elapsed/60)}m! Scheduling immediate catch-up run...")
+        else:
+            next_scheduled_run_time = last_run_ts + target_gap
+            print(f"⏰ [Scheduler Watchdog] Last run was {int(elapsed/60)}m ago. Next run in ~{int((target_gap - elapsed)/60)}m.")
+    else:
+        next_scheduled_run_time = now + (cur_mins * 60)
         
     trigger_file = os.path.join(os.path.dirname(__file__), "trigger.run")
     if os.path.exists(trigger_file):
@@ -910,6 +935,20 @@ def auto_scheduler_loop():
                     threading.Thread(target=execute_pipeline_worker, args=("Immediate Catch-Up Trigger",), daemon=True).start()
 
             now = time.time()
+            
+            # Periodically re-check scheduler_config.json in case GitHub Actions ran in cloud
+            if os.path.exists(cfg_file):
+                try:
+                    with open(cfg_file, 'r', encoding='utf-8') as f:
+                        cfg = json.load(f)
+                        cloud_last_ts = cfg.get('last_run_timestamp', 0)
+                        if cloud_last_ts > last_run_time:
+                            last_run_time = cloud_last_ts
+                            interval_mins = get_interval_minutes()
+                            next_scheduled_run_time = cloud_last_ts + (interval_mins * 60)
+                except Exception:
+                    pass
+
             if now >= next_scheduled_run_time:
                 interval_mins = get_interval_minutes()
                 if not is_pipeline_running:

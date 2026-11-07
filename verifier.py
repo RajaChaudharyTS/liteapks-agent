@@ -158,7 +158,8 @@ class AppSelectionVerifierSubagent:
 
     @staticmethod
     def get_canonical_slug(url):
-        slug = url.rstrip('/').split('/')[-1].replace('.html', '').lower()
+        clean_u = re.sub(r'/download/?$', '', url.rstrip('/'))
+        slug = clean_u.split('/')[-1].replace('.html', '').lower()
         return re.sub(r'-\d+$', '', slug)
 
     # ==========================================================================

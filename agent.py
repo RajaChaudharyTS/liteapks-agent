@@ -831,7 +831,8 @@ def record_posted_apk(sent_set, url, c_slug, norm_title, package_name, version, 
             registry['by_url'].setdefault(url, set()).add(clean_v)
 
 def get_canonical_slug(url):
-    slug = url.rstrip('/').split('/')[-1].replace('.html', '').lower()
+    clean_u = re.sub(r'/download/?$', '', url.rstrip('/'))
+    slug = clean_u.split('/')[-1].replace('.html', '').lower()
     return re.sub(r'-\d+$', '', slug)
 
 def clean_title_from_url(url):
@@ -1809,7 +1810,7 @@ def generate_hashtags(meta):
     elif any(w in cat for w in ['photo', 'camera', 'photography', 'selfie', 'gallery']):
         tags.extend(["#PhotoEditor", "#Photography", "#CameraApp"])
     # Video & Players
-    elif any(w in cat for w in ['video player', 'video editor', 'video', 'cinema', 'vlog']):
+    elif any(w in cat for w in ['video player', 'video editor', 'video', 'cinema', 'vlog', 'recorder', 'recording', 'screen']):
         tags.extend(["#VideoPlayer", "#VideoEditor", "#AndroidVideo"])
     # Personalization & Customization
     elif any(w in cat for w in ['personalization', 'wallpaper', 'launcher', 'icon', 'theme', 'customization']):
@@ -1824,13 +1825,16 @@ def generate_hashtags(meta):
     elif any(w in cat for w in ['communication', 'message', 'messaging', 'chat']):
         tags.extend(["#Communication", "#MessagingApp", "#AndroidChat"])
     # Social Media & Networking
-    elif any(w in cat for w in ['social', 'media & networking', 'network']):
+    elif any(w in cat for w in ['ai', 'artificial intelligence', 'assistant', 'gpt', 'deepseek']):
+        tags.extend(["#AITools", "#Productivity", "#SmartAssistant"])
+    # Social Media & Networking
+    elif any(w in cat for w in ['social', 'social media', 'social network']):
         tags.extend(["#SocialMedia", "#AndroidSocial", "#SocialApp"])
     # Entertainment & OTT Streaming
     elif any(w in cat for w in ['entertainment', 'ott', 'movie', 'tv']):
         tags.extend(["#Entertainment", "#StreamingApp", "#MoviesAndSeries"])
     # System & Utilities
-    elif any(w in cat for w in ['utility', 'tool', 'system', 'cleaner']):
+    elif any(w in cat for w in ['utility', 'tool', 'system', 'cleaner', 'battery', 'speed']):
         tags.extend(["#AndroidTools", "#UtilityApp", "#SystemTools"])
     # Health & Fitness
     elif any(w in cat for w in ['health', 'fitness', 'workout']):
