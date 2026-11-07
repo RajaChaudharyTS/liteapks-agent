@@ -65,6 +65,31 @@ scrape_queue = queue.Queue()
 active_scrapes = {}
 pending_confirmations = {}
 confirmations_lock = threading.Lock()
+user_conversation_state = {}
+state_lock = threading.Lock()
+
+def set_user_state(user_id, state):
+    with state_lock:
+        if state:
+            user_conversation_state[str(user_id)] = state
+        else:
+            user_conversation_state.pop(str(user_id), None)
+
+def get_user_state_mode(user_id):
+    with state_lock:
+        return user_conversation_state.get(str(user_id))
+
+def prompt_demand_app_name(chat_id, user_id):
+    set_user_state(user_id, 'awaiting_demand_app')
+    text = (
+        "🎯 <b>Demand Your App & Game</b>\n\n"
+        "👇 <b>आप कौन सा ऐप डिमांड करना चाहते हैं?</b>\n"
+        "<i>(Which app would you like to demand?)</i>\n\n"
+        "कृपया नीचे उस <b>Android ऐप या गेम का नाम</b> लिखकर भेजें:\n"
+        "(e.g., <code>Netflix</code>, <code>Spotify</code>, <code>CapCut</code>, <code>KineMaster</code>)"
+    )
+    return send_msg(chat_id, text)
+
 
 # ==============================================================================
 # 📦 DATABASE LOADERS & SAVERS
@@ -1159,6 +1184,11 @@ def handle_callback_query(cb):
     chat_id = cb.get('message', {}).get('chat', {}).get('id')
     data = cb.get('data', '')
 
+    if data == 'trigger_demand':
+        answer_callback(cb_id)
+        prompt_demand_app_name(chat_id, user_id)
+        return
+
     if data.startswith('dl_yes_'):
         session_id = data[len('dl_yes_'):]
         handle_download_confirm(cb, session_id)
@@ -1316,6 +1346,7 @@ def main_poll_loop():
 
                 # 3. Commands & Text Messages
                 if text.startswith('/start'):
+                    set_user_state(user_id, None)
                     parts = text.split(maxsplit=1)
                     args = parts[1].strip() if len(parts) > 1 else ""
                     handle_start(chat_id, from_user, args)
